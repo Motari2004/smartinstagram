@@ -773,6 +773,7 @@ def get_db_connection():
 
 
 
+
 def init_db():
     conn = get_db_connection()
     if not conn:
@@ -780,9 +781,6 @@ def init_db():
     try:
         cur = conn.cursor()
 
-        # ============================================================
-        # SESSIONS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS sessions (
                 id SERIAL PRIMARY KEY,
@@ -800,9 +798,6 @@ def init_db():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_handle ON sessions(handle)')
 
-        # ============================================================
-        # HANDLERS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS handlers (
                 id SERIAL PRIMARY KEY,
@@ -815,9 +810,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # VAULT TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS vault (
                 id SERIAL PRIMARY KEY,
@@ -842,9 +834,6 @@ def init_db():
         except Exception:
             pass
 
-        # ============================================================
-        # DELETED POSTS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS deleted_posts (
                 id SERIAL PRIMARY KEY,
@@ -854,9 +843,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # POSTED POSTS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posted_posts (
                 id SERIAL PRIMARY KEY,
@@ -872,9 +858,7 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # ZERNIO ACCOUNTS TABLE
-        # ============================================================
+        # ===== UPDATED: zernio_accounts with multi-platform support =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS zernio_accounts (
                 id SERIAL PRIMARY KEY,
@@ -915,6 +899,7 @@ def init_db():
                 ON zernio_accounts (account_id, platform)
             """)
         except Exception as idx_e:
+            # Duplicates may block the index — remove older dupes then retry
             print(f"zernio_accounts unique index attempt: {idx_e}")
             try:
                 cur.execute("""
@@ -932,9 +917,6 @@ def init_db():
             except Exception as idx_e2:
                 print(f"zernio_accounts unique index failed: {idx_e2}")
 
-        # ============================================================
-        # CHAT HISTORY TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS chat_history (
                 id SERIAL PRIMARY KEY,
@@ -946,9 +928,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # AUTO CONFIG TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS auto_config (
                 id SERIAL PRIMARY KEY,
@@ -971,9 +950,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # AUTO SEEN TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS auto_seen (
                 id SERIAL PRIMARY KEY,
@@ -985,9 +961,7 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # BLUESKY ACCOUNTS TABLE
-        # ============================================================
+        # ===== ADDED: Bluesky accounts table for direct posting =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS bluesky_accounts (
                 id SERIAL PRIMARY KEY,
@@ -1001,9 +975,7 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # PLATFORM MAPPINGS TABLE
-        # ============================================================
+        # ===== ADDED: Platform mappings for auto_config =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS platform_mappings (
                 id SERIAL PRIMARY KEY,
@@ -1015,79 +987,10 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # ===== LOCAL MEMORY TABLES =====
-        # ============================================================
-
-        # 1. USER MEMORY TABLE - For storing preferences and learned data
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_memory (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                memory_key TEXT NOT NULL,
-                memory_value TEXT,
-                memory_type VARCHAR(50) DEFAULT 'preference',
-                confidence FLOAT DEFAULT 1.0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
-                UNIQUE(session_id, memory_key)
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_memory_session ON user_memory(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_memory_key ON user_memory(memory_key)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_memory_type ON user_memory(memory_type)')
-
-        # 2. CONVERSATION MEMORY TABLE - For learning from interactions
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS conversation_memory (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                user_message TEXT,
-                assistant_response TEXT,
-                intent VARCHAR(50),
-                entities JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                importance FLOAT DEFAULT 0.5
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_conversation_memory_session ON conversation_memory(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_conversation_memory_intent ON conversation_memory(intent)')
-
-        # 3. POSTING MEMORY TABLE - For tracking posting patterns
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS posting_memory (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                account_username TEXT,
-                content_type VARCHAR(50),
-                time_of_day VARCHAR(10),
-                day_of_week VARCHAR(10),
-                frequency_count INTEGER DEFAULT 1,
-                last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_posting_memory_session ON posting_memory(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_posting_memory_account ON posting_memory(account_username)')
-
-        # 4. USER PREFERENCES TABLE - Simple key-value for quick lookups
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                platform VARCHAR(50) NOT NULL,
-                preferred_account_id TEXT,
-                preferred_username TEXT,
-                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(session_id, platform)
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_preferences_session ON user_preferences(session_id)')
-
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Database initialized with multi-platform support and local memory tables")
+        print("✅ Database initialized with multi-platform support")
     except Exception as e:
         print(f"❌ DB init error: {e}")
         traceback.print_exc()
@@ -1096,340 +999,18 @@ def init_db():
 
 
 
+
+
+
+
+
+
+
+
+
+
 init_db()
-# ============================================================
-# LOCAL MEMORY FUNCTIONS
-# ============================================================
 
-def save_memory(session_id, key, value, memory_type='preference', confidence=1.0, expires_at=None):
-    """Save a memory for a session."""
-    if not session_id:
-        return False
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO user_memory (session_id, memory_key, memory_value, memory_type, confidence, expires_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (session_id, memory_key) DO UPDATE SET
-                memory_value = EXCLUDED.memory_value,
-                memory_type = EXCLUDED.memory_type,
-                confidence = EXCLUDED.confidence,
-                expires_at = COALESCE(EXCLUDED.expires_at, user_memory.expires_at),
-                updated_at = CURRENT_TIMESTAMP
-        """, (session_id, key, json.dumps(value) if isinstance(value, dict) or isinstance(value, list) else value, 
-              memory_type, confidence, expires_at))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"save_memory error: {e}")
-        return False
-
-
-def get_memory(session_id, key, default=None):
-    """Get a specific memory."""
-    if not session_id:
-        return default
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return default
-        
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT memory_value FROM user_memory
-            WHERE session_id = %s AND memory_key = %s
-            AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            ORDER BY updated_at DESC LIMIT 1
-        """, (session_id, key))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if row:
-            try:
-                return json.loads(row[0])
-            except:
-                return row[0]
-        return default
-    except Exception as e:
-        print(f"get_memory error: {e}")
-        return default
-
-
-def get_all_memories(session_id, memory_type=None):
-    """Get all memories for a session."""
-    if not session_id:
-        return {}
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return {}
-        
-        cur = conn.cursor()
-        if memory_type:
-            cur.execute("""
-                SELECT memory_key, memory_value FROM user_memory
-                WHERE session_id = %s AND memory_type = %s
-                AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            """, (session_id, memory_type))
-        else:
-            cur.execute("""
-                SELECT memory_key, memory_value FROM user_memory
-                WHERE session_id = %s
-                AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            """, (session_id,))
-        
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        memories = {}
-        for key, value in rows:
-            try:
-                memories[key] = json.loads(value)
-            except:
-                memories[key] = value
-        return memories
-    except Exception as e:
-        print(f"get_all_memories error: {e}")
-        return {}
-
-
-def get_user_preferences(session_id):
-    """Get all user preferences as a formatted string for context."""
-    memories = get_all_memories(session_id, 'preference')
-    if not memories:
-        return "No saved preferences yet."
-    
-    lines = ["📝 Your saved preferences:"]
-    
-    # Preferred account
-    if 'preferred_account' in memories:
-        pref = memories['preferred_account']
-        lines.append(f"  • Preferred Instagram account: @{pref.get('username', 'unknown')}")
-    
-    # Preferred content type
-    if 'preferred_content_type' in memories:
-        lines.append(f"  • Preferred content type: {memories['preferred_content_type']}")
-    
-    # Posting frequency
-    if 'posting_frequency' in memories:
-        freq = memories['posting_frequency']
-        lines.append(f"  • You've posted {freq} times in this session")
-    
-    # Common topics
-    if 'common_topics' in memories:
-        topics = memories['common_topics']
-        if topics:
-            lines.append(f"  • Common topics: {', '.join(topics[:3])}")
-    
-    return "\n".join(lines)
-
-
-def save_conversation_memory(session_id, user_message, assistant_response, intent=None, entities=None, importance=0.5):
-    """Save a conversation to memory for learning."""
-    if not session_id:
-        return False
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO conversation_memory (session_id, user_message, assistant_response, intent, entities, importance)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (session_id, user_message[:500], assistant_response[:500], intent, 
-              json.dumps(entities) if entities else None, importance))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"save_conversation_memory error: {e}")
-        return False
-
-
-def get_recent_conversations(session_id, limit=5):
-    """Get recent conversations for context."""
-    if not session_id:
-        return []
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return []
-        
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT user_message, assistant_response, intent, created_at
-            FROM conversation_memory
-            WHERE session_id = %s
-            ORDER BY created_at DESC LIMIT %s
-        """, (session_id, limit))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        return [
-            {
-                'user': row[0],
-                'assistant': row[1],
-                'intent': row[2],
-                'timestamp': str(row[3])
-            }
-            for row in rows
-        ]
-    except Exception as e:
-        print(f"get_recent_conversations error: {e}")
-        return []
-
-
-def learn_from_post(session_id, account_username, content_type='feed'):
-    """Learn from a successful post."""
-    if not session_id:
-        return
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return
-        
-        cur = conn.cursor()
-        # Get current frequency
-        cur.execute("""
-            SELECT frequency_count FROM posting_memory
-            WHERE session_id = %s AND account_username = %s AND content_type = %s
-        """, (session_id, account_username, content_type))
-        row = cur.fetchone()
-        
-        if row:
-            # Update existing
-            cur.execute("""
-                UPDATE posting_memory SET
-                    frequency_count = frequency_count + 1,
-                    last_used_at = CURRENT_TIMESTAMP
-                WHERE session_id = %s AND account_username = %s AND content_type = %s
-            """, (session_id, account_username, content_type))
-        else:
-            # Insert new
-            cur.execute("""
-                INSERT INTO posting_memory (session_id, account_username, content_type, frequency_count)
-                VALUES (%s, %s, %s, 1)
-            """, (session_id, account_username, content_type))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        # Also save as preference
-        save_memory(session_id, 'last_used_account', {'username': account_username}, 'preference')
-        save_memory(session_id, 'last_content_type', content_type, 'preference')
-        
-    except Exception as e:
-        print(f"learn_from_post error: {e}")
-
-
-def update_conversation_context(session_id, user_message, assistant_response, tool_results=None):
-    """Extract and save important information from conversation."""
-    if not session_id:
-        return
-    
-    # Extract intent from user message
-    intent = None
-    entities = {}
-    lower_msg = user_message.lower()
-    
-    # Detect intent
-    if 'post' in lower_msg or 'publish' in lower_msg:
-        intent = 'post'
-    elif 'delete' in lower_msg or 'remove' in lower_msg:
-        intent = 'delete'
-    elif 'fetch' in lower_msg or 'get' in lower_msg:
-        intent = 'fetch'
-    elif 'schedule' in lower_msg:
-        intent = 'schedule'
-    elif 'list' in lower_msg or 'show' in lower_msg:
-        intent = 'list'
-    elif 'login' in lower_msg:
-        intent = 'login'
-    elif 'setup' in lower_msg or 'configure' in lower_msg:
-        intent = 'setup'
-    else:
-        intent = 'general'
-    
-    # Extract entities (simple version)
-    # Check for account mention
-    account_match = re.search(r'@([a-zA-Z0-9._-]+)', user_message)
-    if account_match:
-        entities['mentioned_account'] = account_match.group(1)
-    
-    # Check for vault ID
-    id_match = re.search(r'id\s*[:]?\s*(\d+)', lower_msg)
-    if id_match:
-        entities['vault_id'] = int(id_match.group(1))
-    
-    # Check for platform
-    if 'instagram' in lower_msg or 'ig' in lower_msg:
-        entities['platform'] = 'instagram'
-    elif 'facebook' in lower_msg:
-        entities['platform'] = 'facebook'  # Even though not supported, we track it
-    
-    # Save conversation
-    save_conversation_memory(session_id, user_message, assistant_response[:300], intent, entities)
-    
-    # Save common topics (simple extract)
-    words = user_message.lower().split()
-    common_words = {'post', 'vault', 'instagram', 'account', 'posting', 'image', 'schedule', 'delete'}
-    topics = [w for w in words if w in common_words]
-    if topics:
-        existing_topics = get_memory(session_id, 'common_topics', [])
-        if isinstance(existing_topics, list):
-            existing_topics.extend([t for t in topics if t not in existing_topics])
-            save_memory(session_id, 'common_topics', existing_topics[:10], 'preference')
-
-
-def get_quick_context(session_id):
-    """Get a quick summary of what the AI knows about the user."""
-    if not session_id:
-        return "No session context available."
-    
-    # Get recent conversations
-    recent = get_recent_conversations(session_id, 3)
-    
-    # Get preferences
-    pref_account = get_memory(session_id, 'preferred_account', {})
-    last_account = get_memory(session_id, 'last_used_account', {})
-    post_count = get_memory(session_id, 'posting_frequency', 0)
-    
-    lines = []
-    
-    if pref_account:
-        lines.append(f"• User's preferred account: @{pref_account.get('username', 'unknown')}")
-    elif last_account:
-        lines.append(f"• User's last used account: @{last_account.get('username', 'unknown')}")
-    
-    if post_count:
-        lines.append(f"• User has posted {post_count} times this session")
-    
-    if recent:
-        last_intent = recent[0].get('intent', 'general')
-        lines.append(f"• Last action: {last_intent}")
-    
-    if not lines:
-        return "No user context available yet. Learning from interactions..."
-    
-    return "📌 Context about you:\n" + "\n".join(lines)
 # ============================================================
 # AUTO PILOT (background autonomy)
 # ============================================================
@@ -5318,6 +4899,7 @@ TOOLS_SCHEMA = [
 
 
 
+
 SYSTEM_PROMPT = """You are the AI assistant for Bluesky AI Vault - a social media automation tool.
 
 ===========================================
@@ -5329,44 +4911,23 @@ CORE FUNCTIONALITY:
 - Timezone: Africa/Nairobi
 
 ===========================================
-LOCAL MEMORY FEATURES - I CAN REMEMBER:
-===========================================
-I have a local memory system that learns about you to provide a personalized experience:
-
-1. **Preferred Account**: I remember which Instagram account you prefer to post to
-2. **Posting Patterns**: I learn from your posting history (frequency, content types)
-3. **Common Topics**: I track what you're interested in
-4. **Conversation History**: I remember recent conversations for context
-5. **Last Used Account**: I remember which account you used most recently
-
-You can ask me:
-- "What do you know about me?" - See what I remember
-- "Forget everything" - Clear my memory
-- "Remember @account_name" - Set a preferred account
-- "What's my preferred account?" - Check your current preference
-
-I will automatically use your preferred account when posting, so you don't have to specify it every time!
-
-===========================================
 CRITICAL - HANDLING TOOL RESPONSES:
 ===========================================
 When a tool returns a response, you MUST check for these special flags:
 
 1. **"needs_account": True** - User has multiple Instagram accounts
-   → Check if user has a preferred account saved
-   → If YES: "Using your preferred account: @[account]" and post
-   → If NO: "You have [N] accounts: [names]. Which one?"
-   → After user chooses, REMEMBER it!
+   → You MUST stop and ask: "You have [N] accounts: [names]. Which one?"
+   → DO NOT try to post or continue without asking
 
 2. **"requires_confirmation": True** - Action needs user confirmation
    → You MUST re-prompt the user with the confirmation question
-   → Example: "Reply with YES_DELETE_ALL to confirm"
+   → DO NOT just show the error message
 
-3. **"confirmation_code": "YES_DELETE_ALL"** - User must reply with exact code
+3. **"confirmation_code": "YES_DELETE_ALL"** - User must reply with this exact code
    → Tell the user: "Reply with YES_DELETE_ALL to confirm"
 
 ===========================================
-MULTIPLE ACCOUNTS FLOW WITH MEMORY:
+CRITICAL - MULTIPLE ACCOUNTS FLOW:
 ===========================================
 When the user wants to POST something (post_now, post_unposted, post_vault_batch):
 
@@ -5375,15 +4936,11 @@ STEP 1: Check if the user specified an account:
 - "post unposted to Daily Wisdom" → use account_username="Daily Wisdom"
 
 STEP 2: If NO account was specified:
-- Check if user has a PREFERRED ACCOUNT saved in memory
-- If YES → "Using your preferred account: @[account]" (do NOT ask!)
-- If NO → Call list_accounts() to see how many exist
-  - If ONLY 1 account → use it automatically, mention: "Posting to @[account_name]"
-  - If MULTIPLE accounts → ASK: "You have [N] Instagram accounts: [list]. Which one?"
+- Call list_accounts() first to check how many Instagram accounts exist
+- If ONLY 1 account → use it automatically, mention: "Posting to @[account_name]"
+- If MULTIPLE accounts → ASK the user: "You have [N] Instagram accounts: [list]. Which one?"
 
-STEP 3: After user chooses, REMEMBER the choice for next time
-
-STEP 4: Wait for the user's response before posting.
+STEP 3: Wait for the user's response before posting.
 
 ===========================================
 VAULT MANAGEMENT COMMANDS:
@@ -5392,15 +4949,15 @@ VAULT MANAGEMENT COMMANDS:
 - "list posted" or "show posted" → list_vault_by_status(status="posted")
 - "list scheduled" or "show scheduled" → list_vault_by_status(status="scheduled")
 - "list all vault" or "show all vault" → list_vault_by_status(status="all")
-- "post unposted" → post_unposted() (uses preferred account if set)
+- "post unposted" → post_unposted() (asks which account if multiple)
 - "post count 5" → post_unposted(limit=5)
 - "delete unposted" → delete_vault_items(status="unposted") (needs confirmation)
 - "delete posted" → delete_vault_items(status="posted") (needs confirmation)
 - "delete scheduled" → delete_vault_items(status="scheduled") (needs confirmation)
 - "delete all vault" → delete_vault_items(all=True) (⚠️ Requires: YES_DELETE_ALL)
 - "delete vault id 1,2,3" → delete_vault_items(ids=[1,2,3])
-- "post id 5" → post_now(vault_id=5) (uses preferred account if set)
-- "post 3 from vault" → post_vault_batch(count=3) (uses preferred account if set)
+- "post id 5" → post_now(vault_id=5) (asks which account if multiple)
+- "post 3 from vault" → post_vault_batch(count=3) (asks which account if multiple)
 
 When showing vault items, include status icons:
    ✅ = posted, ⏳ = scheduled, ⬜ = unposted
@@ -5441,36 +4998,23 @@ REPLY STYLE (CRITICAL):
 - For list_accounts: say the usernames only, not the full JSON
 - For confirmation: clearly tell the user what to reply
 - For multiple accounts: list them clearly and ask which one
-- For memory: confirm when you remember something (e.g., "✅ I'll remember @account for future posts")
 - Be friendly, concise, and helpful
-- Use emojis sparingly to make responses more readable
 
 ===========================================
-EXAMPLE CONVERSATIONS WITH MEMORY:
+EXAMPLE CONVERSATIONS:
 ===========================================
 User: "post id 5"
-(First time - no preferred account, 2 accounts exist)
+(If 2 accounts exist)
 You: "You have 2 Instagram accounts: @TheEasternFront and @Serpent. Which one do you want to post to?"
 
 User: "TheEasternFront"
-You: "✅ Done — posted to Instagram (@TheEasternFront). 
-I'll remember @TheEasternFront as your preferred account for future posts."
+You: "✅ Done — posted to Instagram (@TheEasternFront). Caption: '...'"
 
-User: "post id 6"
-(Now has preferred account)
-You: "✅ Done — posted to Instagram (@TheEasternFront) using your preferred account."
+User: "delete all vault"
+You: "⚠️ This will permanently delete ALL vault items from your vault. This cannot be undone. Reply with YES_DELETE_ALL to confirm."
 
-User: "what do you know about me?"
-You: "📌 Context about you:
-• User's preferred account: @TheEasternFront
-• User has posted 3 times this session
-• Last action: post"
-
-User: "forget everything"
-You: "🧹 I've cleared all memories about you. I'll start fresh!"
-
-User: "remember @Serpent"
-You: "✅ I'll remember @Serpent as your preferred account for future posts."
+User: "YES_DELETE_ALL"
+You: "🗑️ Permanently deleted 41 item(s) from vault"
 
 ===========================================
 AUTONOMY (pipelines):
@@ -5494,7 +5038,7 @@ SCHEDULING:
 ===========================================
 - schedule_bulk(count=N, period="week", platforms=["instagram"])
 - Prefer count to take the latest N posts
-- Always ask which account when multiple accounts exist (unless preferred account is set)
+- Always ask which account when multiple accounts exist
 
 ===========================================
 OTHER COMMANDS:
@@ -5507,34 +5051,15 @@ OTHER COMMANDS:
 - "list scheduled" → list_scheduled()
 
 ===========================================
-MEMORY MANAGEMENT COMMANDS:
-===========================================
-- "what do you know about me" → Shows all saved preferences
-- "forget everything" → Clears all memory
-- "remember @account" → Sets preferred account
-- "what's my preferred account" → Shows current preference
-
-===========================================
 REMEMBER:
 ===========================================
 - Timezone is Africa/Nairobi
 - Only Instagram posting is supported
-- Always check for preferred account before asking which account
+- Always ask which account when multiple exist
 - Always confirm destructive actions
 - Be concise and helpful
-- Learn from interactions - remember user preferences
 - NEVER invent success - report tool results honestly
-- NEVER paste raw JSON in your reply
-
-===========================================
-YOUR PERSONALITY:
-===========================================
-- You are helpful, friendly, and efficient
-- You remember user preferences to make interactions smoother
-- You proactively suggest actions based on context
-- You explain what you're doing in simple terms
-- You confirm important actions before executing them
-- You learn from every interaction to improve future responses"""
+- NEVER paste raw JSON in your reply"""
 
 
 
@@ -5805,7 +5330,7 @@ def chat():
 
 
 def handle_chat_json():
-    """Handle JSON chat requests with local memory integration."""
+    """Handle JSON chat requests (existing functionality)"""
     data = request.json or {}
     user_message = (data.get('message') or '').strip()
     history = data.get('history') or []
@@ -5814,22 +5339,10 @@ def handle_chat_json():
 
     if not user_message:
         return jsonify({"success": False, "error": "Empty message"}), 400
-
-    # ============================================================
-    # LOCAL MEMORY INTEGRATION - Create/Initialize Session
-    # ============================================================
-    
-    # Create session if it doesn't exist
-    if not session_id:
-        session_id = str(uuid.uuid4())
-    
-    # Initialize session in memory if not exists
-    if session_id not in sessions:
-        sessions[session_id] = {}
-    
     # ============================================================
     # CHECK IF USER IS RESPONDING TO ACCOUNT SELECTION
     # ============================================================
+    # Check if the user is selecting an account (e.g., "first one", "easternfrontdaily")
     if session_id and session_id in sessions:
         pending_action = sessions[session_id].get('_pending_action')
         if pending_action and pending_action.get('needs_account'):
@@ -5839,7 +5352,7 @@ def handle_chat_json():
             # Pattern: "first", "second", "1st", "2nd", "account 1", "account 2"
             number_match = re.search(r'(?:account\s*)?(?:number\s*)?([1-9])(?:st|nd|rd|th)?\b', user_message.lower())
             if number_match:
-                account_selection = int(number_match.group(1)) - 1
+                account_selection = int(number_match.group(1)) - 1  # 0-indexed
             
             # Pattern: username like @easternfrontdaily or easternfrontdaily
             if account_selection is None:
@@ -5854,6 +5367,7 @@ def handle_chat_json():
                             account_selection = i
                             break
             
+            # If user selected an account, execute the pending action
             if account_selection is not None:
                 accounts_result = tool_list_accounts('instagram')
                 accounts_list = accounts_result.get('accounts', [])
@@ -5863,18 +5377,7 @@ def handle_chat_json():
                     account_username = selected_account.get('username')
                     account_id = selected_account.get('account_id')
                     
-                    # ===== SAVE TO MEMORY =====
-                    # Save as preferred account
-                    save_preferred_account(session_id, account_id, account_username, 'instagram')
-                    save_memory(session_id, 'preferred_account', {
-                        'username': account_username,
-                        'account_id': account_id
-                    }, 'preference', confidence=1.0)
-                    
-                    # Also save to session for quick access
-                    sessions[session_id]['preferred_account'] = account_username
-                    
-                    # Execute the pending action
+                    # Execute the pending action with the selected account
                     if pending_action.get('action') == 'post_now':
                         result = tool_post_now(
                             vault_id=pending_action.get('vault_id'),
@@ -5887,15 +5390,7 @@ def handle_chat_json():
                             account_username=account_username
                         )
                         
-                        # Learn from successful post
-                        if result.get('success'):
-                            learn_from_post(session_id, account_username, pending_action.get('content_type', 'feed'))
-                            post_count = get_memory(session_id, 'posting_frequency', 0)
-                            save_memory(session_id, 'posting_frequency', post_count + 1, 'preference')
-                            # Save conversation memory
-                            save_conversation_memory(session_id, user_message, result.get('message', ''), 'post', 
-                                                     {'account': account_username, 'vault_id': pending_action.get('vault_id')})
-                        
+                        # Clear pending action
                         sessions[session_id]['_pending_action'] = None
                         
                         return jsonify({
@@ -5903,8 +5398,7 @@ def handle_chat_json():
                             "reply": result.get('message', 'Posted successfully!'),
                             "tool_results": [{"name": "post_now", "result": result}],
                             "chat_key": chat_key,
-                            "session_id": session_id,
-                            "memory_updated": True
+                            "session_id": session_id
                         })
                     
                     elif pending_action.get('action') == 'post_unposted':
@@ -5914,11 +5408,6 @@ def handle_chat_json():
                             limit=pending_action.get('limit', 10)
                         )
                         
-                        if result.get('success'):
-                            learn_from_post(session_id, account_username, 'feed')
-                            save_conversation_memory(session_id, user_message, result.get('message', ''), 'post_unposted',
-                                                     {'account': account_username})
-                        
                         sessions[session_id]['_pending_action'] = None
                         
                         return jsonify({
@@ -5926,8 +5415,7 @@ def handle_chat_json():
                             "reply": result.get('message', 'Posted successfully!'),
                             "tool_results": [{"name": "post_unposted", "result": result}],
                             "chat_key": chat_key,
-                            "session_id": session_id,
-                            "memory_updated": True
+                            "session_id": session_id
                         })
                     
                     elif pending_action.get('action') == 'post_vault_batch':
@@ -5939,11 +5427,6 @@ def handle_chat_json():
                             account_username=account_username
                         )
                         
-                        if result.get('success'):
-                            learn_from_post(session_id, account_username, pending_action.get('content_type', 'feed'))
-                            save_conversation_memory(session_id, user_message, result.get('message', ''), 'post_batch',
-                                                     {'account': account_username})
-                        
                         sessions[session_id]['_pending_action'] = None
                         
                         return jsonify({
@@ -5951,106 +5434,11 @@ def handle_chat_json():
                             "reply": result.get('message', 'Posted successfully!'),
                             "tool_results": [{"name": "post_vault_batch", "result": result}],
                             "chat_key": chat_key,
-                            "session_id": session_id,
-                            "memory_updated": True
+                            "session_id": session_id
                         })
-
-    # ---- HARD PRE-ROUTE: Memory Commands ----
+    # ---- HARD PRE-ROUTE: keys / full account list (do not trust Gemini) ----
     lower_msg = user_message.lower()
 
-    # ===== MEMORY COMMANDS =====
-    if 'what do you know about me' in lower_msg or 'what do you remember' in lower_msg or 'tell me about me' in lower_msg:
-        context = get_quick_context(session_id)
-        return jsonify({
-            "success": True,
-            "reply": context,
-            "tool_results": [],
-            "chat_key": chat_key,
-            "session_id": session_id,
-            "used_memory": True
-        })
-
-    if 'forget everything' in lower_msg or 'clear memory' in lower_msg or 'delete my memory' in lower_msg:
-        if clear_all_memory(session_id):
-            # Also clear session data
-            if session_id in sessions:
-                sessions[session_id] = {}
-            return jsonify({
-                "success": True,
-                "reply": "🧹 I've cleared all memories about you. I'll start fresh!",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id,
-                "memory_cleared": True
-            })
-        else:
-            return jsonify({
-                "success": True,
-                "reply": "❌ Could not clear memory. Please try again.",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-
-    if 'remember this account' in lower_msg or 'use this by default' in lower_msg or 'make this my default' in lower_msg:
-        # Try to find the account mentioned
-        account_match = re.search(r'@([a-zA-Z0-9._-]+)', user_message)
-        if account_match:
-            account_username = account_match.group(1)
-            # Verify account exists
-            accounts_result = tool_list_accounts('instagram')
-            accounts_list = accounts_result.get('accounts', [])
-            for acc in accounts_list:
-                if acc.get('username', '').lower() == account_username.lower():
-                    save_preferred_account(session_id, acc.get('account_id'), account_username, 'instagram')
-                    save_memory(session_id, 'preferred_account', {
-                        'username': account_username,
-                        'account_id': acc.get('account_id')
-                    }, 'preference', confidence=1.0)
-                    sessions[session_id]['preferred_account'] = account_username
-                    return jsonify({
-                        "success": True,
-                        "reply": f"✅ I'll remember @{account_username} as your preferred account for future posts.",
-                        "tool_results": [],
-                        "chat_key": chat_key,
-                        "session_id": session_id,
-                        "memory_updated": True
-                    })
-            return jsonify({
-                "success": True,
-                "reply": f"I couldn't find @{account_username} in your connected accounts. Try 'list accounts' to see what's available.",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-        return jsonify({
-            "success": True,
-            "reply": "Which account would you like me to remember? Say: 'Remember @account_name'",
-            "tool_results": [],
-            "chat_key": chat_key,
-            "session_id": session_id
-        })
-
-    if 'what\'s my preferred account' in lower_msg or 'which account do i use' in lower_msg:
-        pref = get_preferred_account(session_id, 'instagram')
-        if pref:
-            return jsonify({
-                "success": True,
-                "reply": f"📌 Your preferred Instagram account is @{pref.get('username')}",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-        else:
-            return jsonify({
-                "success": True,
-                "reply": "📌 You don't have a preferred account set yet. When you post, I'll ask which account to use, or you can say 'Remember @account_name'",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-
-    # ---- HARD PRE-ROUTE: keys / full account list (do not trust Gemini) ----
     # User pasted a Zernio key (sk_...) → check THAT key's accounts
     sk_match = re.search(r'(sk_[A-Za-z0-9]{20,})', user_message)
     if sk_match or (
@@ -6111,39 +5499,17 @@ def handle_chat_json():
             "used_pre_route": True,
         })
 
-    # ============================================================
-    # BUILD MESSAGES WITH MEMORY CONTEXT
-    # ============================================================
-    
-    # Build messages for the model
+    # Build messages for the model (lean context = faster Gemini)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Add memory context
-    memory_context = get_quick_context(session_id)
-    if memory_context and "No user context" not in memory_context:
-        messages.append({"role": "system", "content": f"User Memory:\n{memory_context}"})
-    
-    # Check if user has a preferred account - use it automatically
-    preferred = get_preferred_account(session_id, 'instagram')
-    if preferred:
-        messages.append({"role": "system", "content": f"User's preferred Instagram account: @{preferred.get('username')}. Use this account by default unless the user specifies otherwise."})
-
-    # Add recent conversations for context
-    recent_conv = get_recent_conversations(session_id, 3)
-    if recent_conv:
-        conv_context = "Recent conversations:\n"
-        for conv in recent_conv[:3]:
-            conv_context += f"- User: {conv['user'][:100]}\n"
-            conv_context += f"  Assistant: {conv['assistant'][:100]}\n"
-        messages.append({"role": "system", "content": conv_context})
 
     context_bits = _quick_chat_context(session_id)
     if context_bits:
-        messages.append({"role": "system", "content": "Current Status:\n" + "\n".join(context_bits)})
+        messages.append({"role": "system", "content": "Context:\n" + "\n".join(context_bits)})
 
-    # Add history
+    # Fewer history turns → less prompt tokens → faster
     for h in history[-6:]:
         if h.get('role') in ('user', 'assistant') and h.get('content'):
+            # Cap very long past messages
             content = h['content']
             if len(content) > 800:
                 content = content[:800] + "…"
@@ -6151,25 +5517,24 @@ def handle_chat_json():
 
     messages.append({"role": "user", "content": user_message})
 
-    # ---- Call Gemini ----
+    # ---- Call Gemini (single round-trip preferred) ----
+    # ---- Call Gemini (single round-trip preferred) ----
     response_data, err = call_gemini(messages, tools=TOOLS_SCHEMA, max_tokens=700, timeout=35)
 
     if err:
         print(f"⚠️ Gemini error: {err}")
-        # Fallback: simple keyword routing
+        # Fallback: simple keyword routing so the service still works without AI
         fallback = simple_fallback(user_message, session_id)
         reply = fallback
         if "No GEMINI_API_KEYS" not in err and "not configured" not in err:
             reply = f"{fallback}\n\n(AI error: {err})"
 
+        # If login succeeded in fallback, pull the newest session_id
         new_sid = session_id
         if '✅' in fallback and 'Session ID:' in fallback:
             m = re.search(r'Session ID:\s*(\S+)', fallback)
             if m:
                 new_sid = m.group(1)
-
-        # Save the conversation even on error
-        save_conversation_memory(session_id, user_message, reply[:300], 'fallback')
 
         return jsonify({
             "success": True,
@@ -6188,6 +5553,7 @@ def handle_chat_json():
     if tool_calls:
         for tc in tool_calls:
             name = tc['function']['name']
+            # Parse args
             try:
                 args = json.loads(tc['function'].get('arguments', '{}'))
             except:
@@ -6216,6 +5582,7 @@ def handle_chat_json():
                         'limit': args.get('limit', 10),
                     }
                 else:
+                    # Create session if it doesn't exist
                     if not session_id:
                         session_id = str(uuid.uuid4())
                     sessions[session_id] = {}
@@ -6232,6 +5599,7 @@ def handle_chat_json():
                         'limit': args.get('limit', 10),
                     }
                 
+                # Return the account selection message to the user
                 return jsonify({
                     "success": True,
                     "reply": result.get('message', 'Please select an account.'),
@@ -6241,18 +5609,6 @@ def handle_chat_json():
                     "needs_account": True,
                     "accounts": result.get('accounts', [])
                 })
-            
-            # ============================================================
-            # LEARN FROM SUCCESSFUL ACTIONS
-            # ============================================================
-            if result.get('success') and name in ['post_now', 'post_unposted', 'post_vault_batch']:
-                # Learn from successful post
-                account_username = args.get('account_username')
-                if account_username:
-                    learn_from_post(session_id, account_username, args.get('content_type', 'feed'))
-                    # Increment post count
-                    post_count = get_memory(session_id, 'posting_frequency', 0)
-                    save_memory(session_id, 'posting_frequency', post_count + 1, 'preference')
 
         # Prefer tool's own message field
         reply = format_tool_summary(tool_results)
@@ -6262,17 +5618,14 @@ def handle_chat_json():
     else:
         reply = choice.get('content') or "I'm not sure what to do with that."
 
-    # Save conversation to memory
-    save_conversation_memory(session_id, user_message, reply[:300], 'general')
-
     return jsonify({
         "success": True,
         "reply": reply,
         "tool_results": tool_results,
         "chat_key": chat_key,
-        "session_id": session_id,
-        "memory_updated": True
+        "session_id": session_id
     })
+
 # ============================================================
 # HANDLE CHAT WITH IMAGE UPLOAD
 # ============================================================
