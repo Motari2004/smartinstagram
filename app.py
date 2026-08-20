@@ -1112,6 +1112,12 @@ def save_memory(session_id, key, value, memory_type='preference', confidence=1.0
             return False
         
         cur = conn.cursor()
+        # Convert value to JSON string if it's a dict or list
+        if isinstance(value, (dict, list)):
+            value_str = json.dumps(value)
+        else:
+            value_str = str(value)
+        
         cur.execute("""
             INSERT INTO user_memory (session_id, memory_key, memory_value, memory_type, confidence, expires_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
@@ -1121,8 +1127,7 @@ def save_memory(session_id, key, value, memory_type='preference', confidence=1.0
                 confidence = EXCLUDED.confidence,
                 expires_at = COALESCE(EXCLUDED.expires_at, user_memory.expires_at),
                 updated_at = CURRENT_TIMESTAMP
-        """, (session_id, key, json.dumps(value) if isinstance(value, dict) or isinstance(value, list) else value, 
-              memory_type, confidence, expires_at))
+        """, (session_id, key, value_str, memory_type, confidence, expires_at))
         conn.commit()
         cur.close()
         conn.close()
@@ -1215,7 +1220,10 @@ def get_user_preferences(session_id):
     # Preferred account
     if 'preferred_account' in memories:
         pref = memories['preferred_account']
-        lines.append(f"  • Preferred Instagram account: @{pref.get('username', 'unknown')}")
+        if isinstance(pref, dict):
+            lines.append(f"  • Preferred Instagram account: @{pref.get('username', 'unknown')}")
+        else:
+            lines.append(f"  • Preferred Instagram account: @{pref}")
     
     # Preferred content type
     if 'preferred_content_type' in memories:
@@ -1225,6 +1233,14 @@ def get_user_preferences(session_id):
     if 'posting_frequency' in memories:
         freq = memories['posting_frequency']
         lines.append(f"  • You've posted {freq} times in this session")
+    
+    # Last used account
+    if 'last_used_account' in memories:
+        last = memories['last_used_account']
+        if isinstance(last, dict):
+            lines.append(f"  • Last used account: @{last.get('username', 'unknown')}")
+        else:
+            lines.append(f"  • Last used account: @{last}")
     
     # Common topics
     if 'common_topics' in memories:
@@ -1249,7 +1265,7 @@ def save_conversation_memory(session_id, user_message, assistant_response, inten
         cur.execute("""
             INSERT INTO conversation_memory (session_id, user_message, assistant_response, intent, entities, importance)
             VALUES (%s, %s, %s, %s, %s, %s)
-        """, (session_id, user_message[:500], assistant_response[:500], intent, 
+        """, (session_id, user_message[:500], assistant_response[:500] if assistant_response else '', intent, 
               json.dumps(entities) if entities else None, importance))
         conn.commit()
         cur.close()
@@ -1415,9 +1431,15 @@ def get_quick_context(session_id):
     lines = []
     
     if pref_account:
-        lines.append(f"• User's preferred account: @{pref_account.get('username', 'unknown')}")
+        if isinstance(pref_account, dict):
+            lines.append(f"• User's preferred account: @{pref_account.get('username', 'unknown')}")
+        else:
+            lines.append(f"• User's preferred account: @{pref_account}")
     elif last_account:
-        lines.append(f"• User's last used account: @{last_account.get('username', 'unknown')}")
+        if isinstance(last_account, dict):
+            lines.append(f"• User's last used account: @{last_account.get('username', 'unknown')}")
+        else:
+            lines.append(f"• User's last used account: @{last_account}")
     
     if post_count:
         lines.append(f"• User has posted {post_count} times this session")
@@ -1430,6 +1452,91 @@ def get_quick_context(session_id):
         return "No user context available yet. Learning from interactions..."
     
     return "📌 Context about you:\n" + "\n".join(lines)
+
+
+def clear_all_memory(session_id):
+    """Clear all memory for a session."""
+    if not session_id:
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM user_memory WHERE session_id = %s", (session_id,))
+        cur.execute("DELETE FROM conversation_memory WHERE session_id = %s", (session_id,))
+        cur.execute("DELETE FROM posting_memory WHERE session_id = %s", (session_id,))
+        cur.execute("DELETE FROM user_preferences WHERE session_id = %s", (session_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"clear_all_memory error: {e}")
+        return False
+
+
+def save_preferred_account(session_id, account_id, username, platform='instagram'):
+    """Save the user's preferred account for a platform."""
+    if not session_id:
+        return False
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO user_preferences (session_id, platform, preferred_account_id, preferred_username, last_used)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (session_id, platform) DO UPDATE SET
+                preferred_account_id = EXCLUDED.preferred_account_id,
+                preferred_username = EXCLUDED.preferred_username,
+                last_used = CURRENT_TIMESTAMP
+        """, (session_id, platform, account_id, username))
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Also save in user_memory for quick access
+        save_memory(session_id, 'preferred_account', {'username': username, 'account_id': account_id}, 'preference')
+        return True
+    except Exception as e:
+        print(f"save_preferred_account error: {e}")
+        return False
+
+
+def get_preferred_account(session_id, platform='instagram'):
+    """Get the user's preferred account for a platform."""
+    if not session_id:
+        return None
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT preferred_account_id, preferred_username 
+            FROM user_preferences 
+            WHERE session_id = %s AND platform = %s
+            ORDER BY last_used DESC LIMIT 1
+        """, (session_id, platform))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if row:
+            return {
+                "account_id": row[0],
+                "username": row[1]
+            }
+        return None
+    except Exception as e:
+        print(f"get_preferred_account error: {e}")
+        return None
 # ============================================================
 # AUTO PILOT (background autonomy)
 # ============================================================
