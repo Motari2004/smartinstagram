@@ -3033,226 +3033,7 @@ def tool_list_vault(limit: int = 30, handler_handle: str = None) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def tool_list_vault_by_status(status=None, limit=50, offset=0):
-    """List vault items filtered by post status."""
-    conn = get_db_connection()
-    if not conn:
-        return {"success": False, "error": "DB unavailable"}
-    try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        if status == 'unposted':
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       NULL as post_status, NULL as posted_at, NULL as platform_post_id
-                FROM vault v
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM posted_posts p 
-                    WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-                ORDER BY v.saved_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        elif status in ('posted', 'completed'):
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       p.status as post_status, p.posted_at, p.platform_post_id
-                FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-                ORDER BY p.posted_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        elif status == 'scheduled':
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       p.status as post_status, p.posted_at, p.platform_post_id
-                FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-                ORDER BY p.posted_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        else:
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       COALESCE(p.status, 'unposted') as post_status, 
-                       p.posted_at, p.platform_post_id
-                FROM vault v
-                LEFT JOIN posted_posts p ON p.uri = v.uri
-                ORDER BY v.saved_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        
-        rows = cur.fetchall()
-        
-        # Get total count for the filtered query
-        if status == 'unposted':
-            cur.execute("""
-                SELECT COUNT(*) FROM vault v
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM posted_posts p 
-                    WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-            """)
-        elif status in ('posted', 'completed'):
-            cur.execute("""
-                SELECT COUNT(*) FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-            """)
-        elif status == 'scheduled':
-            cur.execute("""
-                SELECT COUNT(*) FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-            """)
-        else:
-            cur.execute("SELECT COUNT(*) FROM vault")
-        
-        total = cur.fetchone()['count']
-        cur.close()
-        conn.close()
-        
-        vault = []
-        for r in rows:
-            vault.append({
-                "id": r['id'],
-                "uri": r['uri'],
-                "author": r['author'],
-                "display_name": r['display_name'],
-                "text": r['text'],
-                "images": r['images'] or [],
-                "video": r['video'],
-                "likes": r['likes'],
-                "reposts": r['reposts'],
-                "replies": r['replies'],
-                "created_at": r['created_at'].isoformat() if r['created_at'] else None,
-                "saved_at": r['saved_at'].isoformat() if r['saved_at'] else None,
-                "handler_handle": r['handler_handle'],
-                "notes": r['notes'],
-                "post_status": r.get('post_status') or 'unposted',
-                "posted_at": r['posted_at'].isoformat() if r.get('posted_at') else None,
-                "platform_post_id": r.get('platform_post_id'),
-            })
-        return {"success": True, "vault": vault, "count": total, "status_filter": status or 'all'}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
-
-def tool_delete_vault_items(ids=None, status=None, all=False):
-    """Delete vault items by ID, by status, or all."""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return {"success": False, "error": "Database unavailable"}
-        
-        cur = conn.cursor()
-        deleted_count = 0
-        deleted_uris = []
-        
-        if ids and isinstance(ids, list):
-            placeholders = ','.join(['%s'] * len(ids))
-            cur.execute(f"SELECT id, uri FROM vault WHERE id IN ({placeholders})", ids)
-            items = cur.fetchall()
-        elif status == 'unposted':
-            cur.execute("""
-                SELECT id, uri FROM vault v
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM posted_posts p 
-                    WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-            """)
-            items = cur.fetchall()
-        elif status in ('posted', 'completed'):
-            cur.execute("""
-                SELECT v.id, v.uri FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-            """)
-            items = cur.fetchall()
-        elif status == 'scheduled':
-            cur.execute("""
-                SELECT v.id, v.uri FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-            """)
-            items = cur.fetchall()
-        elif all:
-            cur.execute("SELECT id, uri FROM vault")
-            items = cur.fetchall()
-        else:
-            return {"success": False, "error": "Specify ids, status, or all=True"}
-        
-        if not items:
-            cur.close()
-            conn.close()
-            return {"success": True, "deleted_count": 0, "message": "No items to delete"}
-        
-        for item in items:
-            item_id, uri = item
-            cur.execute("DELETE FROM posted_posts WHERE uri = %s", (uri,))
-            cur.execute("DELETE FROM vault WHERE id = %s", (item_id,))
-            deleted_count += 1
-            deleted_uris.append(uri)
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        return {
-            "success": True,
-            "deleted_count": deleted_count,
-            "deleted_uris": deleted_uris,
-            "message": f"Deleted {deleted_count} item(s) from vault"
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def tool_post_unposted(account_id=None, account_username=None, limit=10):
-    """Post all unposted vault items to Instagram."""
-    result = tool_list_vault_by_status(status='unposted', limit=limit)
-    if not result.get('success'):
-        return result
-    
-    items = result.get('vault', [])
-    if not items:
-        return {"success": True, "posted_count": 0, "message": "No unposted items to post"}
-    
-    posted = 0
-    errors = []
-    results = []
-    
-    for item in items:
-        res = tool_post_now(
-            vault_id=item.get('id'),
-            account_id=account_id,
-            account_username=account_username
-        )
-        results.append(res)
-        if res.get('success'):
-            posted += 1
-        else:
-            errors.append(res.get('error', 'Unknown error'))
-        time.sleep(1.5)
-    
-    return {
-        "success": posted > 0,
-        "posted_count": posted,
-        "total": len(items),
-        "results": results,
-        "errors": errors,
-        "message": f"Posted {posted}/{len(items)} unposted items to Instagram"
-    }
 def tool_remove_from_vault(uri: str) -> dict:
     """Remove a post from the vault by URI."""
     try:
@@ -4281,11 +4062,6 @@ TOOL_MAP = {
     "fetch_posts": tool_fetch_posts,
     "add_to_vault": tool_add_to_vault,
     "list_vault": tool_list_vault,
-    # ===== NEW VAULT MANAGEMENT TOOLS =====
-    "list_vault_by_status": tool_list_vault_by_status,
-    "delete_vault_items": tool_delete_vault_items,
-    "post_unposted": tool_post_unposted,
-    # ===== END NEW VAULT MANAGEMENT TOOLS =====
     "remove_from_vault": tool_remove_from_vault,
     "get_status": tool_get_status,
     "list_accounts": tool_list_accounts,
@@ -4306,6 +4082,7 @@ TOOL_MAP = {
     "delete_account": tool_delete_account_permanently,
     "delete_all_accounts": tool_delete_all_accounts_permanently,
 }
+
 
 
 
@@ -4430,78 +4207,6 @@ TOOLS_SCHEMA = [
             }
         }
     },
-    # ===== NEW VAULT MANAGEMENT TOOLS =====
-    {
-        "type": "function",
-        "function": {
-            "name": "list_vault_by_status",
-            "description": "List vault items filtered by post status. Use 'unposted' for items not yet posted, 'posted' for already posted, 'scheduled' for scheduled, or 'all' for everything.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["unposted", "posted", "scheduled", "all"],
-                        "description": "Filter by post status"
-                    },
-                    "limit": {"type": "integer", "default": 50},
-                    "offset": {"type": "integer", "default": 0}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_vault_items",
-            "description": "PERMANENTLY delete vault items by status or all. Use with caution! This cannot be undone. ALWAYS confirm with the user before deleting.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["unposted", "posted", "scheduled", "all"],
-                        "description": "Delete items by status"
-                    },
-                    "ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "List of vault IDs to delete"
-                    },
-                    "all": {
-                        "type": "boolean",
-                        "description": "Delete ALL vault items (requires confirmation)"
-                    }
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "post_unposted",
-            "description": "Post all unposted vault items to Instagram immediately",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "account_username": {
-                        "type": "string",
-                        "description": "Instagram account username to post to"
-                    },
-                    "account_id": {
-                        "type": "string",
-                        "description": "Instagram account ID (optional)"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 10,
-                        "description": "Max number of items to post"
-                    }
-                }
-            }
-        }
-    },
-    # ===== END NEW VAULT MANAGEMENT TOOLS =====
     {
         "type": "function",
         "function": {
@@ -4742,6 +4447,18 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     # ===== ACCOUNT DELETION TOOLS =====
     {
         "type": "function",
@@ -4768,6 +4485,8 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    
+    
     {
         "type": "function",
         "function": {
@@ -4789,7 +4508,26 @@ TOOLS_SCHEMA = [
             }
         }
     }
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 ]
+
 
 
 
@@ -4827,18 +4565,7 @@ ACCOUNT DELETION (PERMANENT - USE WITH CAUTION):
 
 
 
-VAULT MANAGEMENT COMMANDS:
-- "list unposted" or "show unposted" → Call list_vault_by_status(status="unposted")
-- "list posted" or "show posted" → Call list_vault_by_status(status="posted")  
-- "list scheduled" or "show scheduled" → Call list_vault_by_status(status="scheduled")
-- "list all vault" or "show all vault" → Call list_vault_by_status(status="all")
-- "post unposted" → Call post_unposted()
-- "post count 5" → Call post_unposted(limit=5)
-- "delete unposted" → Call delete_vault_items(status="unposted")
-- "delete posted" → Call delete_vault_items(status="posted")
-- "delete scheduled" → Call delete_vault_items(status="scheduled")
-- "delete all vault" → Call delete_vault_items(all=True) (⚠️ Requires confirmation: "YES_DELETE_ALL")
-- "delete vault id 1,2,3" → Call delete_vault_items(ids=[1,2,3])
+
 
 
 
@@ -5010,8 +4737,7 @@ def _quick_chat_context(session_id=None):
     return bits
 
 
-def execute_tool(name, arguments, session_id=None):
-    """Execute a tool by name with arguments."""
+def execute_tool(name, arguments):
     fn = TOOL_MAP.get(name)
     if not fn:
         return {"success": False, "error": f"Unknown tool: {name}"}
@@ -5019,161 +4745,7 @@ def execute_tool(name, arguments, session_id=None):
         # arguments may arrive as string
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
-        
-        # Handle tools that need session_id
-        if name in ['fetch_posts', 'add_to_vault']:
-            return fn(**arguments, session_id=session_id) if session_id else fn(**arguments)
-        
-        # Special handling for tools that need special processing
-        if name == 'login':
-            return fn(arguments.get('username'), arguments.get('password'))
-        
-        if name == 'restore_session':
-            return fn(arguments.get('handle'))
-        
-        if name == 'fetch_posts':
-            if not session_id and arguments.get('session_id'):
-                session_id = arguments.get('session_id')
-            if not session_id:
-                return {"success": False, "error": "Login first"}
-            return fn(
-                session_id,
-                arguments.get('actor'),
-                limit=int(arguments.get('limit') or 20),
-                media_only=bool(arguments.get('media_only', True)),
-                include_reposts=bool(arguments.get('include_reposts', False))
-            )
-        
-        if name == 'add_to_vault':
-            posts = []
-            if session_id and session_id in sessions:
-                posts = sessions[session_id].get('_last_fetched') or []
-            return fn(posts, handler_handle=sessions.get(session_id, {}).get('_last_actor'))
-        
-        if name == 'list_vault':
-            return fn(limit=int(arguments.get('limit') or 30))
-        
-        # ===== NEW VAULT MANAGEMENT TOOLS =====
-        if name == 'list_vault_by_status':
-            return fn(
-                status=arguments.get('status', 'all'),
-                limit=int(arguments.get('limit', 50)),
-                offset=int(arguments.get('offset', 0))
-            )
-        
-        if name == 'delete_vault_items':
-            # Require confirmation for "delete all"
-            if arguments.get('all'):
-                confirm = arguments.get('confirm')
-                if confirm != 'YES_DELETE_ALL':
-                    return {
-                        "success": False, 
-                        "error": "Confirmation required",
-                        "message": "⚠️ This will permanently delete ALL vault items. Reply with 'YES_DELETE_ALL' to confirm."
-                    }
-            return fn(
-                ids=arguments.get('ids'),
-                status=arguments.get('status'),
-                all=arguments.get('all', False)
-            )
-        
-        if name == 'post_unposted':
-            return fn(
-                account_username=arguments.get('account_username'),
-                account_id=arguments.get('account_id'),
-                limit=int(arguments.get('limit', 10))
-            )
-        # ===== END NEW VAULT MANAGEMENT TOOLS =====
-        
-        if name == 'post_now':
-            return fn(
-                vault_id=arguments.get('vault_id'),
-                uri=arguments.get('uri'),
-                image_url=arguments.get('image_url'),
-                caption=arguments.get('caption'),
-                content_type=arguments.get('content_type', 'feed'),
-                platforms=arguments.get('platforms', ['instagram']),
-                account_id=arguments.get('account_id'),
-                account_username=arguments.get('account_username')
-            )
-        
-        if name == 'post_vault_batch':
-            return fn(
-                vault_ids=arguments.get('vault_ids'),
-                count=arguments.get('count'),
-                content_type=arguments.get('content_type', 'feed'),
-                account_id=arguments.get('account_id'),
-                account_username=arguments.get('account_username')
-            )
-        
-        if name == 'schedule_bulk':
-            return fn(
-                uris=arguments.get('uris'),
-                count=arguments.get('count'),
-                period=arguments.get('period', 'week'),
-                start_date=arguments.get('start_date'),
-                min_hours_between=arguments.get('min_hours_between', 2),
-                content_type=arguments.get('content_type', 'feed'),
-                platforms=arguments.get('platforms', ['instagram']),
-                account_id=arguments.get('account_id')
-            )
-        
-        if name == 'list_accounts':
-            return fn(platform=arguments.get('platform'))
-        
-        if name == 'auto_setup':
-            return fn(
-                name=arguments.get('name'),
-                source_handle=arguments.get('source_handle'),
-                account_username=arguments.get('account_username'),
-                account_id=arguments.get('account_id'),
-                poll_interval_sec=arguments.get('poll_interval_sec', 300),
-                max_posts_per_run=arguments.get('max_posts_per_run', 2),
-                content_type=arguments.get('content_type', 'feed'),
-                media_only=bool(arguments.get('media_only', True)),
-                include_reposts=bool(arguments.get('include_reposts', False)),
-                bluesky_handle=arguments.get('bluesky_handle'),
-                bluesky_app_password=arguments.get('bluesky_app_password'),
-                enabled=arguments.get('enabled', True)
-            )
-        
-        if name == 'auto_start':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'auto_stop':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'auto_run_now':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'auto_remove':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'check_zernio_key':
-            return fn(
-                api_key=arguments.get('api_key'),
-                save_to_db=arguments.get('save_to_db', True)
-            )
-        
-        if name == 'get_api_key_status':
-            return fn(key_index=arguments.get('key_index'))
-        
-        if name == 'delete_account':
-            return fn(
-                account_identifier=arguments.get('account_identifier'),
-                account_id=arguments.get('account_id'),
-                platform=arguments.get('platform', 'instagram')
-            )
-        
-        if name == 'delete_all_accounts':
-            return fn(
-                platform=arguments.get('platform'),
-                confirm=arguments.get('confirm')
-            )
-        
-        # For any other tool, just call it directly
         return fn(**arguments)
-        
     except TypeError as e:
         return {"success": False, "error": f"Bad arguments for {name}: {e}"}
     except Exception as e:
@@ -5762,194 +5334,37 @@ def process_image_with_ai(image_path, message, history, session_id, chat_key):
 
 
 
+
+
 def format_tool_summary(tool_results):
-    """Human-readable summary with proper vault formatting."""
+    """Human-readable summary with image references."""
     parts = []
     for tr in tool_results:
         name = tr.get('name')
         r = tr.get('result') or {}
-        
         if not r.get('success'):
-            parts.append(f"❌ {name}: {r.get('error') or r.get('message') or 'failed'}")
+            parts.append(f"❌ {name}: {r.get('error') or 'failed'}")
             continue
-        
-        # ===== HANDLE VAULT LISTING TOOLS =====
-        if name in ['list_vault', 'list_vault_by_status']:
-            items = r.get('vault') or []
-            count = r.get('count') or len(items)
-            status_filter = r.get('status_filter', 'all')
-            
-            if count == 0:
-                status_display = status_filter if status_filter != 'all' else ''
-                parts.append(f"📦 No {status_display} posts in vault." if status_display else "📦 Your vault is empty right now.")
-            else:
-                status_emoji = {'unposted': '⬜', 'posted': '✅', 'scheduled': '⏳', 'all': '📦'}
-                emoji = status_emoji.get(status_filter, '📦')
-                status_label = status_filter if status_filter != 'all' else ''
-                
-                lines = [f"{emoji} Vault has **{count}** {status_label} post(s):"]
-                for i, item in enumerate(items[:5], 1):
-                    text = (item.get('text') or '').strip()
-                    if len(text) > 70:
-                        text = text[:70] + "..."
-                    if not text:
-                        text = "(image only)"
-                    img_count = len(item.get('images') or [])
-                    img_text = f" 📸{img_count}" if img_count > 0 else ""
-                    author = f" @{item.get('author', '?')}"
-                    status_icon = {
-                        'unposted': '⬜', 
-                        'posted': '✅', 
-                        'scheduled': '⏳'
-                    }.get(item.get('post_status', 'unposted'), '')
-                    lines.append(f"  {i}. {status_icon} id={item.get('id')} {text}{img_text}{author}")
-                
-                if len(items) > 5:
-                    lines.append(f"  ...and {len(items) - 5} more")
-                
-                parts.append("\n".join(lines))
+        if r.get('message'):
+            parts.append(r['message'])
             continue
-        
-        # ===== HANDLE SCHEDULED LIST =====
         if name == 'list_scheduled':
             items = r.get('scheduled') or []
             if not items:
-                parts.append("📅 No scheduled posts.")
+                parts.append("No scheduled posts.")
             else:
-                lines = [f"📅 Scheduled ({r.get('count')}):"]
+                lines = [f"Scheduled ({r.get('count')}):"]
                 for it in items:
                     img_indicator = " 📸" if it.get('has_image') else ""
                     lines.append(f"• {it.get('scheduled_for')} — {(it.get('text') or '')[:60]}{img_indicator}")
                 parts.append("\n".join(lines))
-            continue
-        
-        # ===== HANDLE POST UNPOSTED =====
-        if name == 'post_unposted':
-            posted_count = r.get('posted_count', 0)
-            total = r.get('total', 0)
-            if posted_count > 0:
-                parts.append(f"✅ Posted {posted_count}/{total} unposted items to Instagram")
-            else:
-                errors = r.get('errors', [])
-                if errors:
-                    parts.append(f"❌ Failed to post: {', '.join(errors[:3])}")
-                else:
-                    parts.append("📦 No unposted items to post")
-            continue
-        
-        # ===== HANDLE DELETE VAULT ITEMS =====
-        if name == 'delete_vault_items':
-            deleted = r.get('deleted_count', 0)
-            if deleted > 0:
-                parts.append(f"🗑️ Permanently deleted {deleted} item(s) from vault")
-            else:
-                parts.append("📦 No items to delete")
-            continue
-        
-        # ===== HANDLE POST NOW =====
-        if name == 'post_now':
-            if r.get('success'):
-                platforms = r.get('platforms', ['instagram'])
-                parts.append(f"✅ Posted to {', '.join(platforms)} successfully!")
-                if r.get('message'):
-                    parts.append(r.get('message'))
-            else:
-                parts.append(f"❌ Post failed: {r.get('error', 'Unknown error')}")
-            continue
-        
-        # ===== HANDLE ACCOUNTS =====
-        if name == 'list_accounts':
-            accounts = r.get('accounts') or []
-            if not accounts:
-                parts.append("📱 No connected Instagram accounts")
-            else:
-                lines = [f"📱 Instagram accounts ({len(accounts)}):"]
-                for a in accounts[:10]:
-                    label = a.get('display_name') or a.get('username') or a.get('account_id')
-                    lines.append(f"  • @{label}")
-                if len(accounts) > 10:
-                    lines.append(f"  ...and {len(accounts) - 10} more")
-                parts.append("\n".join(lines))
-            continue
-        
-        # ===== HANDLE AUTO STATUS =====
-        if name == 'auto_status':
-            running = r.get('running', False)
-            pipelines = r.get('pipelines', [])
-            enabled_count = len([p for p in pipelines if p.get('enabled')])
-            status = "🟢 RUNNING" if running else "🔴 STOPPED"
-            parts.append(f"🤖 Auto pilot: {status} · {enabled_count} pipeline(s) enabled")
-            if pipelines:
-                for p in pipelines[:5]:
-                    state = '🟢' if p.get('enabled') else '🔴'
-                    src = p.get('source_handle', '?')
-                    dest = p.get('account_username', '?')
-                    interval = p.get('poll_interval_sec', 300)
-                    parts.append(f"  {state} {p.get('name')}: @{src} → @{dest} ({interval}s)")
-            continue
-        
-        # ===== HANDLE API KEYS =====
-        if name == 'list_api_keys':
-            keys = r.get('keys', [])
-            total_accounts = r.get('total_accounts', 0)
-            parts.append(f"🔑 {len(keys)} Zernio API key(s) configured · {total_accounts} account(s)")
-            for k in keys[:3]:
-                env_var = k.get('env_var', f"ZERNIO_API_KEY{k.get('index', '?')}")
-                key_preview = k.get('key', '')[:16] + '…' if k.get('key') else 'None'
-                accounts = k.get('accounts', [])
-                acc_names = [f"@{a.get('username')}" for a in accounts if a.get('username')]
-                acc_str = ', '.join(acc_names) if acc_names else 'no accounts'
-                parts.append(f"  • {env_var}: {key_preview} → {acc_str}")
-            if len(keys) > 3:
-                parts.append(f"  ...and {len(keys) - 3} more")
-            continue
-        
-        # ===== HANDLE CHECK ZERNIO KEY =====
-        if name == 'check_zernio_key':
-            if r.get('valid'):
-                count = r.get('count', 0)
-                parts.append(f"✅ Valid key · {count} account(s)")
-                accounts = r.get('accounts', [])
-                for a in accounts[:5]:
-                    parts.append(f"  • @{a.get('username')} ({a.get('platform')})")
-                if len(accounts) > 5:
-                    parts.append(f"  ...and {len(accounts) - 5} more")
-            else:
-                parts.append(f"❌ {r.get('message', 'Invalid key')}")
-            continue
-        
-        # ===== HANDLE STATUS =====
-        if name == 'get_status':
-            vault = r.get('vault_count', 0)
-            posted = r.get('posted_count', 0)
-            scheduled = r.get('scheduled_count', 0)
-            accounts = r.get('accounts_count', 0)
-            handle = r.get('active_handle', 'None')
-            lines = [
-                f"📊 Status:",
-                f"  • Vault: {vault} posts",
-                f"  • Posted: {posted}",
-                f"  • Scheduled: {scheduled}",
-                f"  • Instagram accounts: {accounts}",
-                f"  • Bluesky session: @{handle}" if handle and handle != 'None' else "  • Bluesky session: None"
-            ]
-            parts.append("\n".join(lines))
-            continue
-        
-        # ===== FALLBACK =====
-        # For any other tool, show a brief summary
-        if r.get('message'):
-            parts.append(r['message'])
         else:
-            # Extract key values for a summary
-            summary_keys = ['posted_count', 'saved', 'scheduled_count', 'count', 'handle', 'deleted_count']
-            short = {k: v for k, v in r.items() if k in summary_keys and v is not None}
-            if short:
-                parts.append(f"{name}: " + ", ".join(f"{k}={v}" for k, v in short.items()))
-            else:
-                parts.append(f"✅ {name} completed")
-    
+            short = {k: v for k, v in r.items() if k in ('posted_count', 'saved', 'scheduled_count', 'count', 'handle') and v is not None}
+            parts.append(f"{name}: " + (", ".join(f"{k}={v}" for k, v in short.items()) or "OK"))
     return "\n".join(parts) if parts else "Done."
+
+
+
 
 
 
