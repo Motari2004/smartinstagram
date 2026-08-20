@@ -84,13 +84,23 @@ else:
     GEMINI_API_KEYS = []
     print("⚠️  No GEMINI_API_KEYS environment variable set!")
 
+
+
+
+
+
 # Models in order of preference (highest quality first)
 GEMINI_MODELS = [
-    "gemini-3.7-flash",        # Best, newest
-    "gemini-3.6-flash",        # Fallback 1
-    "gemini-3.5-flash-lite",   # Fallback 2
-    "gemini-2.5-flash-lite",   # Fallback 3
+    "gemini-3.5-flash-lite",   
+    "gemini-2.5-flash-lite",   
+    "gemini-3.6-flash",    
+    "gemini-3.7-flash",        
+    
+
 ]
+
+
+
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
