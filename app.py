@@ -3525,8 +3525,6 @@ def tool_list_api_keys():
 
 
 
-
-
 def tool_post_now(
     vault_id: int = None,
     uri: str = None,
@@ -3556,7 +3554,46 @@ def tool_post_now(
         return {"success": False, "error": "No valid platforms specified"}
     
     try:
-        # Resolve vault row by id or uri
+        # ============================================================
+        # STEP 1: CHECK FOR MULTIPLE ACCOUNTS
+        # ============================================================
+        if not account_id and not account_username:
+            accounts_list = get_instagram_accounts()
+            
+            if not accounts_list:
+                return {
+                    "success": False,
+                    "error": "No Instagram accounts connected",
+                    "needs_account": True,
+                    "message": "No Instagram accounts are connected. Please connect an account in Zernio first.",
+                    "accounts": []
+                }
+            
+            if len(accounts_list) == 1:
+                # Auto-use the only account
+                account_username = accounts_list[0].get('username')
+                account_id = accounts_list[0].get('account_id')
+                print(f"✅ Auto-using the only Instagram account: @{account_username}")
+            else:
+                # Multiple accounts - ask user to choose
+                account_names = []
+                for a in accounts_list:
+                    display = a.get('display_name') or a.get('username')
+                    name = f"@{a.get('username')}" if a.get('username') else display
+                    account_names.append(f"{name}")
+                
+                return {
+                    "success": False,
+                    "needs_account": True,
+                    "accounts": accounts_list,
+                    "message": f"You have {len(accounts_list)} Instagram accounts. Which one do you want to post to?\n\n" + 
+                               "\n".join([f"  • {name}" for name in account_names]),
+                    "error": "Multiple accounts found - please choose one"
+                }
+
+        # ============================================================
+        # STEP 2: RESOLVE VAULT ROW
+        # ============================================================
         if (vault_id or uri) and not image_url:
             conn = get_db_connection()
             if not conn:
@@ -3591,48 +3628,44 @@ def tool_post_now(
         if not image_url:
             return {"success": False, "error": "Provide vault_id, uri, or image_url"}
 
-        results = []
-        
-        # Split platforms by strategy
-        zernio_platforms = ['instagram']
-        bluesky_platform = 'bluesky'
-        
-        zernio_to_post = [p for p in platforms if p in zernio_platforms]
-        bluesky_to_post = [p for p in platforms if p == bluesky_platform]
-        
-        # 1. Post to Instagram via Zernio
-        if zernio_to_post:
-            # Auto-pick first Instagram account if username not given
+        # ============================================================
+        # STEP 3: RESOLVE ACCOUNT ID
+        # ============================================================
+        # If account_id was provided but looks like a username, treat it as username
+        if account_id and not _looks_like_zernio_id(account_id):
             if not account_username:
-                try:
-                    conn_a = get_db_connection()
-                    if conn_a:
-                        cur_a = conn_a.cursor()
-                        cur_a.execute(
-                            "SELECT username FROM zernio_accounts WHERE platform='instagram' AND is_active=TRUE AND username IS NOT NULL ORDER BY username LIMIT 1"
-                        )
-                        row_a = cur_a.fetchone()
-                        cur_a.close()
-                        conn_a.close()
-                        if row_a and row_a[0]:
-                            account_username = row_a[0]
-                except Exception:
-                    pass
-            if not account_username:
-                return {
-                    "success": False,
-                    "error": "No Instagram account connected. Connect one in Zernio first.",
-                    "message": "I couldn’t post — no Instagram account is connected yet."
-                }
-
-            account_id = resolve_zernio_account_id(account_id, account_username, zernio_to_post[0])
+                account_username = account_id
+            account_id = None
+        
+        if not account_id and account_username:
+            account_id = resolve_instagram_account_id(None, account_username)
+        
+        if not account_id:
+            # Try to resolve by username one more time with fuzzy matching
+            accounts_list = get_instagram_accounts()
+            for acc in accounts_list:
+                if account_username and account_username.lower() in (acc.get('username') or '').lower():
+                    account_id = acc.get('account_id')
+                    account_username = acc.get('username')
+                    break
+            
             if not account_id:
                 return {
                     "success": False,
                     "error": f"Could not resolve account '{account_username}'.",
-                    "message": f"I couldn’t find Instagram @{account_username}. Check connected accounts."
+                    "message": f"I couldn't find Instagram @{account_username}. Check connected accounts.",
+                    "needs_account": True,
+                    "accounts": get_instagram_accounts()
                 }
 
+        # ============================================================
+        # STEP 4: POST TO INSTAGRAM
+        # ============================================================
+        results = []
+        zernio_platforms = ['instagram']
+        zernio_to_post = [p for p in platforms if p in zernio_platforms]
+        
+        if zernio_to_post:
             print(f"📤 post_now vault_id={vault_id} account={account_id} platforms={zernio_to_post} type={content_type}")
 
             zernio_result = post_to_zernio_multi_platform(
@@ -3652,16 +3685,20 @@ def tool_post_now(
                     "platforms": zernio_to_post,
                     "success": True,
                     "message": f"✅ Posted to Instagram",
-                    "post_id": zernio_result.get('post_id')
+                    "post_id": zernio_result.get('post_id'),
+                    "account_username": account_username
                 })
             else:
                 results.append({
                     "platforms": zernio_to_post,
                     "success": False,
-                    "error": zernio_result.get('error')
+                    "error": zernio_result.get('error'),
+                    "account_username": account_username
                 })
 
-        # Build response
+        # ============================================================
+        # STEP 5: BUILD RESPONSE
+        # ============================================================
         success_platforms = []
         failed_platforms = []
         for r in results:
@@ -3673,7 +3710,7 @@ def tool_post_now(
         cap_preview = (caption or '').strip().replace('\n', ' ')
         if len(cap_preview) > 120:
             cap_preview = cap_preview[:120] + "…"
-        # author is set when loading from vault; may be undefined for raw image posts
+        
         try:
             _author = author
         except NameError:
@@ -3681,12 +3718,24 @@ def tool_post_now(
 
         if success_platforms:
             who = f" from @{_author}" if _author else ""
+            account_display = f" (@{account_username})" if account_username else ""
+            
+            # Get account display name for nicer message
+            account_display_name = account_username
+            if account_id:
+                accounts_list = get_instagram_accounts()
+                for acc in accounts_list:
+                    if acc.get('account_id') == account_id:
+                        account_display_name = acc.get('display_name') or acc.get('username')
+                        break
+            
             msg = (
-                f"Done — I just published vault id {vault_id}{who} to Instagram"
-                + (f" (@{account_username})" if account_username else "")
+                f"✅ Done — I just published vault id {vault_id}{who} to Instagram"
+                + f" (@{account_display_name})"
                 + ".\n"
                 + (f"Caption: “{cap_preview}”" if cap_preview else "No caption on that one.")
             )
+            
             global _last_chat_action
             _last_chat_action = {
                 "type": "post",
@@ -3695,6 +3744,7 @@ def tool_post_now(
                 "author": _author,
                 "caption": cap_preview,
                 "account_username": account_username,
+                "account_id": account_id,
                 "platforms": success_platforms,
                 "content_type": content_type,
                 "at": datetime.now().isoformat(),
@@ -3705,7 +3755,7 @@ def tool_post_now(
                 if r.get('error'):
                     err = r.get('error')
                     break
-            msg = f"I couldn’t publish that post. {err or 'Unknown error.'}"
+            msg = f"❌ I couldn't publish that post. {err or 'Unknown error.'}"
 
         return {
             "success": len(success_platforms) > 0,
@@ -3716,13 +3766,13 @@ def tool_post_now(
             "uri": uri,
             "caption": caption,
             "account_username": account_username,
+            "account_id": account_id,
             "message": msg,
         }
 
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e), "message": f"Post failed: {e}"}
-
 
 
 
