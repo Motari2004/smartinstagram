@@ -672,6 +672,67 @@
             }
             .media-preview { flex-wrap: wrap; gap: 8px; }
         }
+
+
+/* ===== BACK TO DASHBOARD BUTTON ===== */
+.back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    transition: all 0.2s ease;
+    margin-right: 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.back-link:hover {
+    color: var(--text);
+    border-color: var(--accent);
+    background: rgba(17,133,254,0.08);
+}
+.back-link i {
+    font-size: 12px;
+}
+
+@media (max-width: 768px) {
+    .back-link {
+        font-size: 10px;
+        padding: 4px 8px;
+        margin-right: 4px;
+    }
+    .back-link i {
+        font-size: 10px;
+    }
+    .chat-header {
+        padding-left: 48px;
+        gap: 4px;
+        flex-wrap: nowrap;
+    }
+    .chat-header h2 {
+        font-size: 11px !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .back-link {
+        font-size: 9px;
+        padding: 3px 6px;
+        border-radius: 6px;
+    }
+    .back-link i {
+        font-size: 9px;
+    }
+    .chat-header h2 {
+        font-size: 10px !important;
+    }
+}
+
     </style>
 </head>
 <body>
@@ -719,16 +780,26 @@
     </aside>
 
     <main class="main">
-        <div class="chat-header">
-            <div>
-                <h2>Bluesky → Instagram AI</h2>
-                <div class="sub">Tell me what to fetch, save, schedule or post</div>
-            </div>
-            <div class="header-auto" id="headerAuto">
-                <span class="live-dot" id="headerDot"></span>
-                <span id="headerAutoLabel">Auto off</span>
-            </div>
-        </div>
+
+
+
+
+<div class="chat-header">
+    <a href="https://smartmaster.vercel.app" class="back-link">
+        <i class="fas fa-arrow-left"></i> Dashboard
+    </a>
+    <div>
+        <h2>Bluesky → Instagram AI</h2>
+        <div class="sub">Fetch Bluesky → vault → post to Instagram</div>
+    </div>
+    <div class="header-auto" id="headerAuto">
+        <span class="live-dot" id="headerDot"></span>
+        <span id="headerAutoLabel">Auto off</span>
+    </div>
+</div>
+
+
+
 
         <div class="messages" id="messages">
             <div class="empty-state" id="emptyState">
