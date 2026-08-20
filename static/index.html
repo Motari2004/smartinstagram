@@ -844,10 +844,37 @@
     </main>
 
 <script>
+
+
+// ============================================================
+// UUID GENERATOR - For browsers without crypto.randomUUID
+// ============================================================
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+
 const API = window.location.origin;
 let history = [];
-let sessionId = localStorage.getItem('aivault_session_id') || null;
-let chatKey = localStorage.getItem('aivault_chat_key') || crypto.randomUUID();
+// Persistent session ID - always create one if not exists
+let sessionId = localStorage.getItem('aivault_session_id');
+if (!sessionId) {
+    sessionId = crypto.randomUUID ? crypto.randomUUID() : generateUUID();
+    localStorage.setItem('aivault_session_id', sessionId);
+    console.log('🆕 New session created:', sessionId);
+} else {
+    console.log('♻️ Using existing session:', sessionId);
+}
+
+let chatKey = localStorage.getItem('aivault_chat_key');
+if (!chatKey) {
+    chatKey = crypto.randomUUID ? crypto.randomUUID() : generateUUID();
+    localStorage.setItem('aivault_chat_key', chatKey);
+}
+
 localStorage.setItem('aivault_chat_key', chatKey);
 
 const $ = id => document.getElementById(id);
@@ -970,6 +997,10 @@ async function sendMessage() {
             addMessage('assistant', data.error || 'Something went wrong');
             return;
         }
+        
+        // ============================================================
+        // UPDATE SESSION ID - PERSISTENT MEMORY
+        // ============================================================
         if (data.session_id) {
             sessionId = data.session_id;
             localStorage.setItem('aivault_session_id', sessionId);
@@ -983,6 +1014,55 @@ async function sendMessage() {
             }
         }
 
+        // ============================================================
+        // CHECK FOR MEMORY COMMANDS - Show what AI knows
+        // ============================================================
+        const lowerText = text.toLowerCase();
+        if (lowerText.includes('what do you know about me') || 
+            lowerText.includes('what do you remember') || 
+            lowerText.includes('tell me about me')) {
+            // The backend handles this via the "what do you know about me" route
+            // Just show the reply
+        }
+
+        // ============================================================
+        // CHECK IF USER INTRODUCED THEMSELVES
+        // ============================================================
+        const nameMatch = text.match(/(?:my name is|call me|i am|i\'m)\s+([A-Za-z\s]+)/i);
+        if (nameMatch && nameMatch[1]) {
+            const name = nameMatch[1].trim();
+            // The backend will save this, but we can also show a confirmation
+            toast(`👋 Nice to meet you, ${name}! I'll remember that.`, 'success');
+        }
+
+        // ============================================================
+        // CHECK IF USER SET A PREFERRED ACCOUNT
+        // ============================================================
+        const accountMatch = text.match(/remember\s+@([a-zA-Z0-9._-]+)/i);
+        if (accountMatch) {
+            const account = accountMatch[1];
+            toast(`📌 I'll remember @${account} as your preferred account.`, 'success');
+        }
+
+        // ============================================================
+        // CHECK IF USER ASKED WHO THEY ARE
+        // ============================================================
+        if (lowerText.includes('who am i') || lowerText.includes('what\'s my name')) {
+            // The backend handles this via the "who am i" route
+        }
+
+        // ============================================================
+        // CHECK IF USER WANTS TO CLEAR MEMORY
+        // ============================================================
+        if (lowerText.includes('forget everything') || 
+            lowerText.includes('clear memory') || 
+            lowerText.includes('delete my memory')) {
+            toast('🧹 Memory cleared!', 'info');
+        }
+
+        // ============================================================
+        // EXTRACT IMAGES FROM RESPONSE
+        // ============================================================
         let specificId = null;
         const idMatch = text.match(/(?:id|ID|number|#)\s*[:#]?\s*(\d+)/);
         if (idMatch) specificId = parseInt(idMatch[1]);
@@ -1038,13 +1118,39 @@ async function sendMessage() {
         if (images.length > 10) images = images.slice(0, 10);
 
         const toolNames = toolResults.map(t => t.name);
-        addMessage('assistant', data.reply, toolNames, images);
-        history.push({ role: 'assistant', content: data.reply });
+        
+        // ============================================================
+        // ADD REPLY WITH MEMORY CONTEXT
+        // ============================================================
+        let reply = data.reply;
+        
+        // If the user asked about memory, enhance the reply with session info
+        if (lowerText.includes('what do you know about me') || lowerText.includes('who am i')) {
+            // The backend already returned the memory context
+            // Just display it as-is
+        }
+        
+        addMessage('assistant', reply, toolNames, images);
+        history.push({ role: 'assistant', content: reply });
         if (history.length > 30) history = history.slice(-24);
+        
+        // ============================================================
+        // UPDATE STATUS
+        // ============================================================
         refreshStatus();
+        
+        // ============================================================
+        // LOG SESSION INFO FOR DEBUGGING
+        // ============================================================
+        console.log('📌 Session ID:', sessionId);
+        if (data.memory_updated) {
+            console.log('🧠 Memory updated!');
+        }
+        
     } catch (e) {
         typingEl.classList.remove('active');
         addMessage('assistant', 'Network error: ' + e.message);
+        console.error('❌ Send message error:', e);
     }
 }
 
