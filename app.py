@@ -25,7 +25,7 @@ import threading
 from PIL import Image
 from io import BytesIO
 from dotenv import load_dotenv
-
+from psycopg2.extras import Json, RealDictCursor
 load_dotenv()
 
 
