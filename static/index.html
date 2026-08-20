@@ -256,39 +256,15 @@
         }
 
         /* ===== COMPOSER (lifted + curved) ===== */
-        .composer {
-            padding: 14px 20px 20px;
-            padding-bottom: calc(18px + var(--safe-bottom));
-            border-top: 1px solid var(--border);
-            background: var(--card);
-            flex-shrink: 0;
-            position: relative;
-        }
-        .quick-row {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 12px;
-        }
-        .quick-btn {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid var(--border);
-            color: var(--text-secondary);
-            font-size: 11px;
-            padding: 5px 14px;
-            border-radius: 20px;
-            cursor: pointer;
-            font-family: inherit;
-            transition: all 0.25s ease;
-            touch-action: manipulation;
-            min-height: 32px;
-        }
-        .quick-btn:hover {
-            border-color: var(--accent);
-            color: var(--accent);
-            background: rgba(79,159,255,0.08);
-        }
-        .quick-btn:active { transform: scale(0.96); }
+.composer {
+    padding: 14px 20px 20px;
+    padding-bottom: calc(18px + var(--safe-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--card);
+    flex-shrink: 0;
+    position: relative;
+}
+
 
         .composer-inner {
             display: flex;
@@ -784,6 +760,20 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <div class="chat-header">
     <a href="https://smartmaster.vercel.app" class="back-link">
         <i class="fas fa-arrow-left"></i> Dashboard
@@ -798,55 +788,59 @@
     </div>
 </div>
 
+<div class="messages" id="messages">
+    <div class="empty-state" id="emptyState">
+        <i class="fas fa-comments"></i>
+        <h3>Start a conversation</h3>
+        <p>Ask me to login, fetch posts, fill the vault, schedule a week of content, or post something right now.</p>
+    </div>
+</div>
 
+<div class="typing" id="typing">
+    <div class="dots"><span></span><span></span><span></span></div>
+    Thinking…
+</div>
 
-
-        <div class="messages" id="messages">
-            <div class="empty-state" id="emptyState">
-                <i class="fas fa-comments"></i>
-                <h3>Start a conversation</h3>
-                <p>Ask me to login, fetch posts, fill the vault, schedule a week of content, or post something right now.</p>
-            </div>
+<div class="composer">
+    <div class="composer-inner">
+        <div class="input-wrapper">
+            <textarea id="input" rows="1" placeholder="Message the AI… (Enter to send)"></textarea>
         </div>
+        <button class="send" id="sendBtn" onclick="sendMessage()" disabled>
+            <i class="fas fa-paper-plane"></i>
+        </button>
+    </div>
 
-        <div class="typing" id="typing">
-            <div class="dots"><span></span><span></span><span></span></div>
-            Thinking…
+    <div id="mediaPreview" style="display:none;" class="media-preview">
+        <div style="position:relative;width:48px;height:48px;border-radius:8px;overflow:hidden;flex-shrink:0;border:1px solid var(--border);background:var(--bg);">
+            <img id="mediaPreviewImage" style="width:100%;height:100%;object-fit:cover;"/>
+            <button onclick="removeMedia()" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:var(--error);color:#fff;border:none;cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;">&times;</button>
         </div>
-
-        <div class="composer">
-            <div class="quick-row">
-                <button class="quick-btn" onclick="sendQuick('Status')">📊 Status</button>
-                <button class="quick-btn" onclick="sendQuick('List vault')">📦 Vault</button>
-                <button class="quick-btn" onclick="sendQuick('List scheduled posts')">📅 Scheduled</button>
-                <button class="quick-btn" onclick="sendQuick('List Instagram accounts')">📸 Accounts</button>
-            </div>
-
-            <div class="composer-inner">
-                <div class="input-wrapper">
-                    <textarea id="input" rows="1" placeholder="Message the AI… (Enter to send)"></textarea>
-                </div>
-                <button class="send" id="sendBtn" onclick="sendMessage()" disabled>
-                    <i class="fas fa-paper-plane"></i>
-                </button>
-            </div>
-
-            <div id="mediaPreview" style="display:none;" class="media-preview">
-                <div style="position:relative;width:48px;height:48px;border-radius:8px;overflow:hidden;flex-shrink:0;border:1px solid var(--border);background:var(--bg);">
-                    <img id="mediaPreviewImage" style="width:100%;height:100%;object-fit:cover;"/>
-                    <button onclick="removeMedia()" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:var(--error);color:#fff;border:none;cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;">&times;</button>
-                </div>
-                <div style="flex:1;min-width:0;">
-                    <span id="mediaFileName" style="display:block;font-size:12px;font-weight:500;color:var(--text);"></span>
-                    <span id="mediaFileSize" style="font-size:10px;color:var(--text-muted);"></span>
-                </div>
-                <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;">
-                    <button onclick="postImageNow()" style="background:var(--accent);color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;">Post Now</button>
-                    <button onclick="scheduleImage()" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border);padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;">Schedule</button>
-                    <button onclick="saveToVault()" style="background:transparent;color:var(--warning);border:1px solid var(--border);padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;">Save</button>
-                </div>
-            </div>
+        <div style="flex:1;min-width:0;">
+            <span id="mediaFileName" style="display:block;font-size:12px;font-weight:500;color:var(--text);"></span>
+            <span id="mediaFileSize" style="font-size:10px;color:var(--text-muted);"></span>
         </div>
+        <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;">
+            <button onclick="postImageNow()" style="background:var(--accent);color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;">Post Now</button>
+            <button onclick="scheduleImage()" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border);padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;">Schedule</button>
+            <button onclick="saveToVault()" style="background:transparent;color:var(--warning);border:1px solid var(--border);padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;">Save</button>
+        </div>
+    </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     </main>
 
 <script>
