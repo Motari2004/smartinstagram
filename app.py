@@ -5351,7 +5351,103 @@ def handle_chat_json():
 
     if not user_message:
         return jsonify({"success": False, "error": "Empty message"}), 400
-
+    # ============================================================
+    # CHECK IF USER IS RESPONDING TO ACCOUNT SELECTION
+    # ============================================================
+    # Check if the user is selecting an account (e.g., "first one", "easternfrontdaily")
+    if session_id and session_id in sessions:
+        pending_action = sessions[session_id].get('_pending_action')
+        if pending_action and pending_action.get('needs_account'):
+            # Check if user is selecting an account
+            account_selection = None
+            
+            # Pattern: "first", "second", "1st", "2nd", "account 1", "account 2"
+            number_match = re.search(r'(?:account\s*)?(?:number\s*)?([1-9])(?:st|nd|rd|th)?\b', user_message.lower())
+            if number_match:
+                account_selection = int(number_match.group(1)) - 1  # 0-indexed
+            
+            # Pattern: username like @easternfrontdaily or easternfrontdaily
+            if account_selection is None:
+                username_match = re.search(r'@?([a-zA-Z0-9._-]+)', user_message)
+                if username_match:
+                    potential_username = username_match.group(1)
+                    accounts_result = tool_list_accounts('instagram')
+                    accounts_list = accounts_result.get('accounts', [])
+                    for i, acc in enumerate(accounts_list):
+                        acc_username = acc.get('username', '')
+                        if potential_username.lower() == acc_username.lower():
+                            account_selection = i
+                            break
+            
+            # If user selected an account, execute the pending action
+            if account_selection is not None:
+                accounts_result = tool_list_accounts('instagram')
+                accounts_list = accounts_result.get('accounts', [])
+                
+                if account_selection < len(accounts_list):
+                    selected_account = accounts_list[account_selection]
+                    account_username = selected_account.get('username')
+                    account_id = selected_account.get('account_id')
+                    
+                    # Execute the pending action with the selected account
+                    if pending_action.get('action') == 'post_now':
+                        result = tool_post_now(
+                            vault_id=pending_action.get('vault_id'),
+                            uri=pending_action.get('uri'),
+                            image_url=pending_action.get('image_url'),
+                            caption=pending_action.get('caption'),
+                            content_type=pending_action.get('content_type', 'feed'),
+                            platforms=['instagram'],
+                            account_id=account_id,
+                            account_username=account_username
+                        )
+                        
+                        # Clear pending action
+                        sessions[session_id]['_pending_action'] = None
+                        
+                        return jsonify({
+                            "success": True,
+                            "reply": result.get('message', 'Posted successfully!'),
+                            "tool_results": [{"name": "post_now", "result": result}],
+                            "chat_key": chat_key,
+                            "session_id": session_id
+                        })
+                    
+                    elif pending_action.get('action') == 'post_unposted':
+                        result = tool_post_unposted(
+                            account_id=account_id,
+                            account_username=account_username,
+                            limit=pending_action.get('limit', 10)
+                        )
+                        
+                        sessions[session_id]['_pending_action'] = None
+                        
+                        return jsonify({
+                            "success": True,
+                            "reply": result.get('message', 'Posted successfully!'),
+                            "tool_results": [{"name": "post_unposted", "result": result}],
+                            "chat_key": chat_key,
+                            "session_id": session_id
+                        })
+                    
+                    elif pending_action.get('action') == 'post_vault_batch':
+                        result = tool_post_vault_batch(
+                            vault_ids=pending_action.get('vault_ids'),
+                            count=pending_action.get('count'),
+                            content_type=pending_action.get('content_type', 'feed'),
+                            account_id=account_id,
+                            account_username=account_username
+                        )
+                        
+                        sessions[session_id]['_pending_action'] = None
+                        
+                        return jsonify({
+                            "success": True,
+                            "reply": result.get('message', 'Posted successfully!'),
+                            "tool_results": [{"name": "post_vault_batch", "result": result}],
+                            "chat_key": chat_key,
+                            "session_id": session_id
+                        })
     # ---- HARD PRE-ROUTE: keys / full account list (do not trust Gemini) ----
     lower_msg = user_message.lower()
 
@@ -5434,6 +5530,7 @@ def handle_chat_json():
     messages.append({"role": "user", "content": user_message})
 
     # ---- Call Gemini (single round-trip preferred) ----
+    # ---- Call Gemini (single round-trip preferred) ----
     response_data, err = call_gemini(messages, tools=TOOLS_SCHEMA, max_tokens=700, timeout=35)
 
     if err:
@@ -5463,19 +5560,70 @@ def handle_chat_json():
     choice = response_data['choices'][0]['message']
     tool_calls = choice.get('tool_calls') or []
 
-    # Execute tools if any — reply from local summary (skip 2nd Gemini call = ~2x faster)
+    # Execute tools if any
     tool_results = []
     if tool_calls:
         for tc in tool_calls:
             name = tc['function']['name']
-            args = tc['function'].get('arguments', '{}')
+            # Parse args
+            try:
+                args = json.loads(tc['function'].get('arguments', '{}'))
+            except:
+                args = {}
+            
             print(f"🔧 Tool call: {name}({args})")
             result = execute_tool(name, args)
             tool_results.append({"name": name, "result": result})
+            
+            # ============================================================
+            # CHECK IF TOOL NEEDS ACCOUNT SELECTION
+            # ============================================================
+            if result.get('needs_account'):
+                # Store the pending action in the session
+                if session_id and session_id in sessions:
+                    sessions[session_id]['_pending_action'] = {
+                        'needs_account': True,
+                        'action': name,
+                        'vault_id': args.get('vault_id'),
+                        'uri': args.get('uri'),
+                        'image_url': args.get('image_url'),
+                        'caption': args.get('caption'),
+                        'content_type': args.get('content_type', 'feed'),
+                        'count': args.get('count'),
+                        'vault_ids': args.get('vault_ids'),
+                        'limit': args.get('limit', 10),
+                    }
+                else:
+                    # Create session if it doesn't exist
+                    if not session_id:
+                        session_id = str(uuid.uuid4())
+                    sessions[session_id] = {}
+                    sessions[session_id]['_pending_action'] = {
+                        'needs_account': True,
+                        'action': name,
+                        'vault_id': args.get('vault_id'),
+                        'uri': args.get('uri'),
+                        'image_url': args.get('image_url'),
+                        'caption': args.get('caption'),
+                        'content_type': args.get('content_type', 'feed'),
+                        'count': args.get('count'),
+                        'vault_ids': args.get('vault_ids'),
+                        'limit': args.get('limit', 10),
+                    }
+                
+                # Return the account selection message to the user
+                return jsonify({
+                    "success": True,
+                    "reply": result.get('message', 'Please select an account.'),
+                    "tool_results": tool_results,
+                    "chat_key": chat_key,
+                    "session_id": session_id,
+                    "needs_account": True,
+                    "accounts": result.get('accounts', [])
+                })
 
-        # Prefer tool's own message field; otherwise format_tool_summary
+        # Prefer tool's own message field
         reply = format_tool_summary(tool_results)
-        # If the first model also returned text, prepend briefly (rare with tool_choice auto)
         extra = (choice.get('content') or '').strip()
         if extra and len(extra) < 200 and extra not in reply:
             reply = f"{extra}\n\n{reply}" if reply else extra
@@ -5489,7 +5637,6 @@ def handle_chat_json():
         "chat_key": chat_key,
         "session_id": session_id
     })
-
 
 # ============================================================
 # HANDLE CHAT WITH IMAGE UPLOAD
