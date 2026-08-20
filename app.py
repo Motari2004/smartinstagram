@@ -3220,6 +3220,26 @@ def tool_delete_vault_items(ids=None, status=None, all=False):
 
 def tool_post_unposted(account_id=None, account_username=None, limit=10):
     """Post all unposted vault items to Instagram."""
+    # Check accounts first using existing function
+    if not account_id and not account_username:
+        accounts_result = tool_list_accounts('instagram')
+        accounts_list = accounts_result.get('accounts', [])
+        
+        if not accounts_list:
+            return {"success": False, "error": "No Instagram accounts connected"}
+        
+        if len(accounts_list) == 1:
+            account_username = accounts_list[0].get('username')
+            account_id = accounts_list[0].get('account_id')
+        else:
+            account_names = [f"@{a.get('username')}" for a in accounts_list]
+            return {
+                "success": False,
+                "needs_account": True,
+                "accounts": accounts_list,
+                "message": f"You have {len(accounts_list)} Instagram accounts: {', '.join(account_names)}. Which one do you want to post to?"
+            }
+    
     result = tool_list_vault_by_status(status='unposted', limit=limit)
     if not result.get('success'):
         return result
@@ -3251,7 +3271,7 @@ def tool_post_unposted(account_id=None, account_username=None, limit=10):
         "total": len(items),
         "results": results,
         "errors": errors,
-        "message": f"Posted {posted}/{len(items)} unposted items to Instagram"
+        "message": f"Posted {posted}/{len(items)} unposted items to Instagram (@{account_username or 'selected account'})"
     }
 def tool_remove_from_vault(uri: str) -> dict:
     """Remove a post from the vault by URI."""
@@ -3555,10 +3575,12 @@ def tool_post_now(
     
     try:
         # ============================================================
-        # STEP 1: CHECK FOR MULTIPLE ACCOUNTS
+        # STEP 1: CHECK FOR MULTIPLE ACCOUNTS (using existing functions)
         # ============================================================
         if not account_id and not account_username:
-            accounts_list = get_instagram_accounts()
+            # Use existing tool_list_accounts to get Instagram accounts
+            accounts_result = tool_list_accounts('instagram')
+            accounts_list = accounts_result.get('accounts', [])
             
             if not accounts_list:
                 return {
@@ -3578,9 +3600,8 @@ def tool_post_now(
                 # Multiple accounts - ask user to choose
                 account_names = []
                 for a in accounts_list:
-                    display = a.get('display_name') or a.get('username')
-                    name = f"@{a.get('username')}" if a.get('username') else display
-                    account_names.append(f"{name}")
+                    name = a.get('username') or a.get('display_name') or a.get('account_id')
+                    account_names.append(f"@{name}")
                 
                 return {
                     "success": False,
@@ -3638,11 +3659,12 @@ def tool_post_now(
             account_id = None
         
         if not account_id and account_username:
-            account_id = resolve_instagram_account_id(None, account_username)
+            account_id = resolve_zernio_account_id(account_id, account_username, 'instagram')
         
         if not account_id:
             # Try to resolve by username one more time with fuzzy matching
-            accounts_list = get_instagram_accounts()
+            accounts_result = tool_list_accounts('instagram')
+            accounts_list = accounts_result.get('accounts', [])
             for acc in accounts_list:
                 if account_username and account_username.lower() in (acc.get('username') or '').lower():
                     account_id = acc.get('account_id')
@@ -3655,7 +3677,7 @@ def tool_post_now(
                     "error": f"Could not resolve account '{account_username}'.",
                     "message": f"I couldn't find Instagram @{account_username}. Check connected accounts.",
                     "needs_account": True,
-                    "accounts": get_instagram_accounts()
+                    "accounts": accounts_list
                 }
 
         # ============================================================
@@ -3666,6 +3688,23 @@ def tool_post_now(
         zernio_to_post = [p for p in platforms if p in zernio_platforms]
         
         if zernio_to_post:
+            # Auto-pick first Instagram account if username not given (fallback)
+            if not account_username:
+                try:
+                    conn_a = get_db_connection()
+                    if conn_a:
+                        cur_a = conn_a.cursor()
+                        cur_a.execute(
+                            "SELECT username FROM zernio_accounts WHERE platform='instagram' AND is_active=TRUE AND username IS NOT NULL ORDER BY username LIMIT 1"
+                        )
+                        row_a = cur_a.fetchone()
+                        cur_a.close()
+                        conn_a.close()
+                        if row_a and row_a[0]:
+                            account_username = row_a[0]
+                except Exception:
+                    pass
+
             print(f"📤 post_now vault_id={vault_id} account={account_id} platforms={zernio_to_post} type={content_type}")
 
             zernio_result = post_to_zernio_multi_platform(
@@ -3723,7 +3762,8 @@ def tool_post_now(
             # Get account display name for nicer message
             account_display_name = account_username
             if account_id:
-                accounts_list = get_instagram_accounts()
+                accounts_result = tool_list_accounts('instagram')
+                accounts_list = accounts_result.get('accounts', [])
                 for acc in accounts_list:
                     if acc.get('account_id') == account_id:
                         account_display_name = acc.get('display_name') or acc.get('username')
@@ -3900,7 +3940,6 @@ def get_account_id_for_platform(platform, account_id=None):
 
 
 
-
 def tool_post_vault_batch(
     vault_ids: list = None,
     count: int = None,
@@ -3908,10 +3947,27 @@ def tool_post_vault_batch(
     account_id: str = None,
     account_username: str = None
 ) -> dict:
-    """
-    Post multiple vault items now.
-    Pass vault_ids=[1,2] or count=2 (latest N from vault).
-    """
+    """Post multiple vault items now."""
+    # Check accounts first using existing function
+    if not account_id and not account_username:
+        accounts_result = tool_list_accounts('instagram')
+        accounts_list = accounts_result.get('accounts', [])
+        
+        if not accounts_list:
+            return {"success": False, "error": "No Instagram accounts connected"}
+        
+        if len(accounts_list) == 1:
+            account_username = accounts_list[0].get('username')
+            account_id = accounts_list[0].get('account_id')
+        else:
+            account_names = [f"@{a.get('username')}" for a in accounts_list]
+            return {
+                "success": False,
+                "needs_account": True,
+                "accounts": accounts_list,
+                "message": f"You have {len(accounts_list)} Instagram accounts: {', '.join(account_names)}. Which one do you want to post to?"
+            }
+    
     try:
         ids = list(vault_ids) if vault_ids else []
         if not ids and count:
@@ -3944,12 +4000,11 @@ def tool_post_vault_batch(
             "posted_count": ok,
             "failed_count": len(ids) - ok,
             "results": results,
-            "message": f"Posted {ok}/{len(ids)} vault item(s) to Instagram"
+            "message": f"Posted {ok}/{len(ids)} vault item(s) to Instagram (@{account_username or 'selected account'})"
         }
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e)}
-
 
 def generate_random_schedule_times(start_date, end_date, total_posts, min_hours_between=2, tz=None):
     if tz is None:
