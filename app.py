@@ -28,6 +28,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+
+
+
+
+# ============================================================
+# SESSION STORAGE
+# ============================================================
+
+sessions = {}  # in-memory session cache
+
+
+
+
+
+
+
 app = Flask(__name__, static_folder='static')
 CORS(app)
 
@@ -54,56 +71,184 @@ SCHEDULE_TIMEZONE = "Africa/Nairobi"
 
 
 
+# ============================================================
+# GEMINI CONFIG - Models with fallback
+# ============================================================
 
-# Google Gemini API — READ FROM ENVIRONMENT ONLY (no hardcoded defaults)
-# Set GEMINI_API_KEYS as comma-separated env var, or GEMINI_API_KEY as single key
+# Google Gemini API — Load from environment variables only
 _env_keys = os.environ.get('GEMINI_API_KEYS', '') or os.environ.get('GEMINI_API_KEY', '')
 if _env_keys:
     GEMINI_API_KEYS = [k.strip() for k in _env_keys.split(',') if k.strip()]
+    print(f"✅ Loaded {len(GEMINI_API_KEYS)} Gemini keys from environment")
 else:
     GEMINI_API_KEYS = []
-    print("⚠️ WARNING: No GEMINI_API_KEYS set. AI chat will use fallback mode only.")
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    print("⚠️  No GEMINI_API_KEYS environment variable set!")
+
+# Models in order of preference (highest quality first)
+GEMINI_MODELS = [
+    "gemini-3.7-flash",        # Best, newest
+    "gemini-3.6-flash",        # Fallback 1
+    "gemini-3.5-flash-lite",   # Fallback 2
+    "gemini-2.5-flash-lite",   # Fallback 3
+]
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-GEMINI_MODEL = "gemini-3.1-flash-lite"  # Use a valid model
-_gemini_key_index = 0  # round-robin pointer
 
+# ============================================================
+# GEMINI STATE VARIABLES
+# ============================================================
 
+_gemini_model_index = 0
+_gemini_key_index = 0
+_gemini_key_cooldown = {}
+_gemini_model_cooldown = {}
 
-sessions = {}  # in-memory session cache
-_last_chat_action = {}  # last post/list action for conversational follow-ups
-
+# ============================================================
+# GEMINI HELPER FUNCTIONS
+# ============================================================
 
 def next_gemini_key():
-    """Return next API key in round-robin order."""
+    """Get next available Gemini API key (skip cooldown keys)"""
     global _gemini_key_index
     if not GEMINI_API_KEYS:
         return None
-    key = GEMINI_API_KEYS[_gemini_key_index % len(GEMINI_API_KEYS)]
-    _gemini_key_index += 1
-    return key
+    
+    # Try to find a working key
+    for _ in range(len(GEMINI_API_KEYS) * 2):
+        key_index = _gemini_key_index % len(GEMINI_API_KEYS)
+        key = GEMINI_API_KEYS[key_index]
+        
+        # Check if key is on cooldown
+        if key in _gemini_key_cooldown:
+            cooldown_until = _gemini_key_cooldown[key]
+            if datetime.now() < cooldown_until:
+                _gemini_key_index += 1
+                continue
+        
+        _gemini_key_index += 1
+        return key
+    
+    # All keys on cooldown
+    print("⚠️ All API keys on cooldown")
+    return GEMINI_API_KEYS[0] if GEMINI_API_KEYS else None
+
+def next_gemini_model():
+    """Get next model in round-robin fashion"""
+    global _gemini_model_index
+    if not GEMINI_MODELS:
+        return "gemini-2.5-flash-lite"
+    
+    model = GEMINI_MODELS[_gemini_model_index % len(GEMINI_MODELS)]
+    _gemini_model_index += 1
+    return model
+
+def handle_model_rate_limit(model):
+    """Put a model on cooldown if it's rate-limited"""
+    _gemini_model_cooldown[model] = datetime.now() + timedelta(seconds=60)
+    print(f"⏳ Model {model} on cooldown for 60 seconds")
 
 
 
 
 
-
-
-
-
-
-
-
-
+def call_gemini(messages, tools=None, model=None, max_tokens=800, timeout=35):
+    """Call Gemini API with automatic model fallback on errors"""
+    
+    # If no model specified, get next model
+    if model is None:
+        model = next_gemini_model()
+    
+    # Check if model is on cooldown
+    if model in _gemini_model_cooldown:
+        cooldown_until = _gemini_model_cooldown[model]
+        if datetime.now() < cooldown_until:
+            print(f"⏳ Model {model} on cooldown, trying next model...")
+            next_model = next_gemini_model()
+            if next_model != model:
+                return call_gemini(messages, tools, next_model, max_tokens, timeout)
+            return None, f"All models on cooldown"
+    
+    # Get API key
+    key = next_gemini_key()
+    if not key:
+        return None, "No Gemini API keys. Set GEMINI_API_KEYS in environment."
+    
+    print(f"🔑 Using Gemini key: {key[:12]}... with model: {model}")
+    
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    
+    try:
+        r = requests.post(
+            f"{GEMINI_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=timeout
+        )
+        print(f"📥 Gemini response status: {r.status_code} (model: {model})")
+        
+        # Handle 403 - API key leaked/invalid - try next key
+        if r.status_code == 403:
+            print(f"❌ API key is invalid or leaked! Status: 403")
+            if key in _gemini_key_cooldown:
+                _gemini_key_cooldown[key] = datetime.now() + timedelta(seconds=300)
+            else:
+                _gemini_key_cooldown[key] = datetime.now() + timedelta(seconds=300)
+            print(f"⏳ Key {key[:12]}... on cooldown for 5 minutes")
+            
+            next_key = next_gemini_key()
+            if next_key and next_key != key:
+                print(f"🔄 Switching to next API key")
+                return call_gemini(messages, tools, model, max_tokens, timeout)
+            return None, f"All API keys invalid or on cooldown - please check your GEMINI_API_KEYS"
+        
+        # Handle rate limit - try next model
+        if r.status_code == 429:
+            print(f"⚠️ Rate limit hit for model {model}")
+            handle_model_rate_limit(model)
+            
+            next_model = next_gemini_model()
+            if next_model != model:
+                print(f"🔄 Switching to next model: {next_model}")
+                return call_gemini(messages, tools, next_model, max_tokens, timeout)
+            return None, f"Rate limit exceeded - all models exhausted"
+        
+        # Handle other errors - try next model
+        if r.status_code != 200:
+            print(f"❌ Gemini error with model {model}: {r.text[:200]}")
+            
+            if r.status_code != 400 and r.status_code != 403:
+                next_model = next_gemini_model()
+                if next_model != model:
+                    print(f"🔄 Switching to next model: {next_model}")
+                    return call_gemini(messages, tools, next_model, max_tokens, timeout)
+            
+            return None, f"Gemini {r.status_code} with {model}: {r.text[:300]}"
+        
+        # Success! Reset model cooldown
+        if model in _gemini_model_cooldown:
+            del _gemini_model_cooldown[model]
+        
+        return r.json(), None
+        
+    except Exception as e:
+        print(f"❌ Gemini exception with {model}: {e}")
+        next_model = next_gemini_model()
+        if next_model != model:
+            print(f"🔄 Switching to next model on exception: {next_model}")
+            return call_gemini(messages, tools, next_model, max_tokens, timeout)
+        return None, str(e)
 
 
 
@@ -4520,77 +4665,6 @@ Other rules:
 
 
 
-
-
-# ============================================================
-# AI CHAT ENDPOINT
-# ============================================================
-
-def call_gemini(messages, tools=None, max_tokens=800, timeout=35):
-    """Call Google Gemini via OpenAI-compatible endpoint.
-    Rotates through GEMINI_API_KEYS (round-robin). On 429, tries the next key.
-    Tuned for speed: lower max_tokens + shorter timeout by default.
-    """
-    if not GEMINI_API_KEYS:
-        return None, "No GEMINI_API_KEYS configured. Add keys in app.py or .env to enable real AI."
-
-    # Gemini OpenAI-compat is picky about null content on assistant tool-call messages
-    clean_messages = []
-    for m in messages:
-        msg = dict(m)
-        if msg.get("role") == "assistant" and msg.get("content") is None:
-            msg["content"] = ""
-        clean_messages.append(msg)
-
-    payload = {
-        "model": GEMINI_MODEL,
-        "messages": clean_messages,
-        "temperature": 0.2,
-        "max_tokens": max_tokens,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-
-    last_error = None
-    tried = set()
-    # Try each key at most once per call
-    for _ in range(len(GEMINI_API_KEYS)):
-        key = next_gemini_key()
-        if not key or key in tried:
-            continue
-        tried.add(key)
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json"
-        }
-        try:
-            r = requests.post(
-                f"{GEMINI_BASE_URL}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=timeout,
-            )
-            if r.status_code == 200:
-                print(f"✅ Gemini OK (key …{key[-6:]})")
-                return r.json(), None
-            # Rate limited → try next key
-            if r.status_code == 429:
-                print(f"⚠️ 429 on key …{key[-6:]}, trying next…")
-                last_error = f"Gemini API error 429: {r.text[:300]}"
-                continue
-            # Other errors → don't bother other keys unless it's auth
-            if r.status_code in (401, 403):
-                print(f"⚠️ Auth error on key …{key[-6:]}, trying next…")
-                last_error = f"Gemini API error {r.status_code}: {r.text[:300]}"
-                continue
-            return None, f"Gemini API error {r.status_code}: {r.text[:400]}"
-        except Exception as e:
-            last_error = str(e)
-            print(f"⚠️ Gemini request error: {e}")
-            continue
-
-    return None, last_error or "All Gemini API keys exhausted (rate limited or invalid)."
 
 
 # Lightweight chat context cache (avoids Zernio network + heavy DB on every message)
