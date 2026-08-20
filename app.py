@@ -5122,88 +5122,26 @@ def execute_tool(name, arguments, session_id=None):
             )
         # ===== END NEW VAULT MANAGEMENT TOOLS =====
         
-if name == 'post_now':
-    # If no account specified, check how many accounts exist
-    account_username = arguments.get('account_username')
-    account_id = arguments.get('account_id')
-    
-    if not account_username and not account_id:
-        # Check if we have accounts
-        accounts_result = tool_list_accounts('instagram')
-        accounts = accounts_result.get('accounts', [])
+        if name == 'post_now':
+            return fn(
+                vault_id=arguments.get('vault_id'),
+                uri=arguments.get('uri'),
+                image_url=arguments.get('image_url'),
+                caption=arguments.get('caption'),
+                content_type=arguments.get('content_type', 'feed'),
+                platforms=arguments.get('platforms', ['instagram']),
+                account_id=arguments.get('account_id'),
+                account_username=arguments.get('account_username')
+            )
         
-        if len(accounts) == 0:
-            return {
-                "success": False,
-                "error": "No Instagram accounts connected",
-                "message": "❌ No Instagram accounts are connected. Please connect an account in Zernio first."
-            }
-        elif len(accounts) == 1:
-            # Use the only account automatically
-            account_username = accounts[0].get('username')
-            arguments['account_username'] = account_username
-            print(f"✅ Auto-selected the only account: @{account_username}")
-        else:
-            # Multiple accounts - ask user which one
-            account_names = [f"@{a.get('username')}" for a in accounts if a.get('username')]
-            return {
-                "success": False,
-                "error": "Multiple accounts found - please specify",
-                "message": f"You have {len(accounts)} Instagram accounts: {', '.join(account_names)}\n\nWhich account would you like to post to? Reply with the username (e.g., 'post to @easternfrontdaily')",
-                "requires_account_selection": True,
-                "available_accounts": accounts
-            }
-    
-    return fn(
-        vault_id=arguments.get('vault_id'),
-        uri=arguments.get('uri'),
-        image_url=arguments.get('image_url'),
-        caption=arguments.get('caption'),
-        content_type=arguments.get('content_type', 'feed'),
-        platforms=arguments.get('platforms', ['instagram']),
-        account_id=account_id,
-        account_username=account_username
-    )
-        
-if name == 'post_vault_batch':
-    # If no account specified, check how many accounts exist
-    account_username = arguments.get('account_username')
-    account_id = arguments.get('account_id')
-    
-    if not account_username and not account_id:
-        # Check if we have accounts
-        accounts_result = tool_list_accounts('instagram')
-        accounts = accounts_result.get('accounts', [])
-        
-        if len(accounts) == 0:
-            return {
-                "success": False,
-                "error": "No Instagram accounts connected",
-                "message": "❌ No Instagram accounts are connected. Please connect an account in Zernio first."
-            }
-        elif len(accounts) == 1:
-            # Use the only account automatically
-            account_username = accounts[0].get('username')
-            arguments['account_username'] = account_username
-            print(f"✅ Auto-selected the only account: @{account_username}")
-        else:
-            # Multiple accounts - ask user which one
-            account_names = [f"@{a.get('username')}" for a in accounts if a.get('username')]
-            return {
-                "success": False,
-                "error": "Multiple accounts found - please specify",
-                "message": f"You have {len(accounts)} Instagram accounts: {', '.join(account_names)}\n\nWhich account would you like to post to? Reply with the username (e.g., 'post to @easternfrontdaily')",
-                "requires_account_selection": True,
-                "available_accounts": accounts
-            }
-    
-    return fn(
-        vault_ids=arguments.get('vault_ids'),
-        count=arguments.get('count'),
-        content_type=arguments.get('content_type', 'feed'),
-        account_id=account_id,
-        account_username=account_username
-    )
+        if name == 'post_vault_batch':
+            return fn(
+                vault_ids=arguments.get('vault_ids'),
+                count=arguments.get('count'),
+                content_type=arguments.get('content_type', 'feed'),
+                account_id=arguments.get('account_id'),
+                account_username=arguments.get('account_username')
+            )
         
         if name == 'schedule_bulk':
             return fn(
