@@ -25,7 +25,7 @@ import threading
 from PIL import Image
 from io import BytesIO
 from dotenv import load_dotenv
-from psycopg2.extras import Json, RealDictCursor
+
 load_dotenv()
 
 
@@ -773,6 +773,7 @@ def get_db_connection():
 
 
 
+
 def init_db():
     conn = get_db_connection()
     if not conn:
@@ -780,9 +781,6 @@ def init_db():
     try:
         cur = conn.cursor()
 
-        # ============================================================
-        # SESSIONS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS sessions (
                 id SERIAL PRIMARY KEY,
@@ -800,9 +798,6 @@ def init_db():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_sessions_handle ON sessions(handle)')
 
-        # ============================================================
-        # HANDLERS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS handlers (
                 id SERIAL PRIMARY KEY,
@@ -815,9 +810,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # VAULT TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS vault (
                 id SERIAL PRIMARY KEY,
@@ -842,9 +834,6 @@ def init_db():
         except Exception:
             pass
 
-        # ============================================================
-        # DELETED POSTS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS deleted_posts (
                 id SERIAL PRIMARY KEY,
@@ -854,9 +843,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # POSTED POSTS TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posted_posts (
                 id SERIAL PRIMARY KEY,
@@ -872,9 +858,7 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # ZERNIO ACCOUNTS TABLE
-        # ============================================================
+        # ===== UPDATED: zernio_accounts with multi-platform support =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS zernio_accounts (
                 id SERIAL PRIMARY KEY,
@@ -915,6 +899,7 @@ def init_db():
                 ON zernio_accounts (account_id, platform)
             """)
         except Exception as idx_e:
+            # Duplicates may block the index — remove older dupes then retry
             print(f"zernio_accounts unique index attempt: {idx_e}")
             try:
                 cur.execute("""
@@ -932,9 +917,6 @@ def init_db():
             except Exception as idx_e2:
                 print(f"zernio_accounts unique index failed: {idx_e2}")
 
-        # ============================================================
-        # CHAT HISTORY TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS chat_history (
                 id SERIAL PRIMARY KEY,
@@ -946,9 +928,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # AUTO CONFIG TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS auto_config (
                 id SERIAL PRIMARY KEY,
@@ -971,9 +950,6 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # AUTO SEEN TABLE
-        # ============================================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS auto_seen (
                 id SERIAL PRIMARY KEY,
@@ -985,9 +961,7 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # BLUESKY ACCOUNTS TABLE
-        # ============================================================
+        # ===== ADDED: Bluesky accounts table for direct posting =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS bluesky_accounts (
                 id SERIAL PRIMARY KEY,
@@ -1001,9 +975,7 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # PLATFORM MAPPINGS TABLE
-        # ============================================================
+        # ===== ADDED: Platform mappings for auto_config =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS platform_mappings (
                 id SERIAL PRIMARY KEY,
@@ -1015,79 +987,10 @@ def init_db():
             )
         ''')
 
-        # ============================================================
-        # ===== LOCAL MEMORY TABLES =====
-        # ============================================================
-
-        # 1. USER MEMORY TABLE - For storing preferences and learned data
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_memory (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                memory_key TEXT NOT NULL,
-                memory_value TEXT,
-                memory_type VARCHAR(50) DEFAULT 'preference',
-                confidence FLOAT DEFAULT 1.0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
-                UNIQUE(session_id, memory_key)
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_memory_session ON user_memory(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_memory_key ON user_memory(memory_key)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_memory_type ON user_memory(memory_type)')
-
-        # 2. CONVERSATION MEMORY TABLE - For learning from interactions
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS conversation_memory (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                user_message TEXT,
-                assistant_response TEXT,
-                intent VARCHAR(50),
-                entities JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                importance FLOAT DEFAULT 0.5
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_conversation_memory_session ON conversation_memory(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_conversation_memory_intent ON conversation_memory(intent)')
-
-        # 3. POSTING MEMORY TABLE - For tracking posting patterns
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS posting_memory (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                account_username TEXT,
-                content_type VARCHAR(50),
-                time_of_day VARCHAR(10),
-                day_of_week VARCHAR(10),
-                frequency_count INTEGER DEFAULT 1,
-                last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_posting_memory_session ON posting_memory(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_posting_memory_account ON posting_memory(account_username)')
-
-        # 4. USER PREFERENCES TABLE - Simple key-value for quick lookups
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                platform VARCHAR(50) NOT NULL,
-                preferred_account_id TEXT,
-                preferred_username TEXT,
-                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(session_id, platform)
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_user_preferences_session ON user_preferences(session_id)')
-
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Database initialized with multi-platform support and local memory tables")
+        print("✅ Database initialized with multi-platform support")
     except Exception as e:
         print(f"❌ DB init error: {e}")
         traceback.print_exc()
@@ -1096,447 +999,18 @@ def init_db():
 
 
 
+
+
+
+
+
+
+
+
+
+
 init_db()
-# ============================================================
-# LOCAL MEMORY FUNCTIONS
-# ============================================================
 
-def save_memory(session_id, key, value, memory_type='preference', confidence=1.0, expires_at=None):
-    """Save a memory for a session."""
-    if not session_id:
-        return False
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        
-        cur = conn.cursor()
-        # Convert value to JSON string if it's a dict or list
-        if isinstance(value, (dict, list)):
-            value_str = json.dumps(value)
-        else:
-            value_str = str(value)
-        
-        cur.execute("""
-            INSERT INTO user_memory (session_id, memory_key, memory_value, memory_type, confidence, expires_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (session_id, memory_key) DO UPDATE SET
-                memory_value = EXCLUDED.memory_value,
-                memory_type = EXCLUDED.memory_type,
-                confidence = EXCLUDED.confidence,
-                expires_at = COALESCE(EXCLUDED.expires_at, user_memory.expires_at),
-                updated_at = CURRENT_TIMESTAMP
-        """, (session_id, key, value_str, memory_type, confidence, expires_at))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"save_memory error: {e}")
-        return False
-
-
-def get_memory(session_id, key, default=None):
-    """Get a specific memory."""
-    if not session_id:
-        return default
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return default
-        
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT memory_value FROM user_memory
-            WHERE session_id = %s AND memory_key = %s
-            AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            ORDER BY updated_at DESC LIMIT 1
-        """, (session_id, key))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if row:
-            try:
-                return json.loads(row[0])
-            except:
-                return row[0]
-        return default
-    except Exception as e:
-        print(f"get_memory error: {e}")
-        return default
-
-
-def get_all_memories(session_id, memory_type=None):
-    """Get all memories for a session."""
-    if not session_id:
-        return {}
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return {}
-        
-        cur = conn.cursor()
-        if memory_type:
-            cur.execute("""
-                SELECT memory_key, memory_value FROM user_memory
-                WHERE session_id = %s AND memory_type = %s
-                AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            """, (session_id, memory_type))
-        else:
-            cur.execute("""
-                SELECT memory_key, memory_value FROM user_memory
-                WHERE session_id = %s
-                AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            """, (session_id,))
-        
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        memories = {}
-        for key, value in rows:
-            try:
-                memories[key] = json.loads(value)
-            except:
-                memories[key] = value
-        return memories
-    except Exception as e:
-        print(f"get_all_memories error: {e}")
-        return {}
-
-
-def get_user_preferences(session_id):
-    """Get all user preferences as a formatted string for context."""
-    memories = get_all_memories(session_id, 'preference')
-    if not memories:
-        return "No saved preferences yet."
-    
-    lines = ["📝 Your saved preferences:"]
-    
-    # Preferred account
-    if 'preferred_account' in memories:
-        pref = memories['preferred_account']
-        if isinstance(pref, dict):
-            lines.append(f"  • Preferred Instagram account: @{pref.get('username', 'unknown')}")
-        else:
-            lines.append(f"  • Preferred Instagram account: @{pref}")
-    
-    # Preferred content type
-    if 'preferred_content_type' in memories:
-        lines.append(f"  • Preferred content type: {memories['preferred_content_type']}")
-    
-    # Posting frequency
-    if 'posting_frequency' in memories:
-        freq = memories['posting_frequency']
-        lines.append(f"  • You've posted {freq} times in this session")
-    
-    # Last used account
-    if 'last_used_account' in memories:
-        last = memories['last_used_account']
-        if isinstance(last, dict):
-            lines.append(f"  • Last used account: @{last.get('username', 'unknown')}")
-        else:
-            lines.append(f"  • Last used account: @{last}")
-    
-    # Common topics
-    if 'common_topics' in memories:
-        topics = memories['common_topics']
-        if topics:
-            lines.append(f"  • Common topics: {', '.join(topics[:3])}")
-    
-    return "\n".join(lines)
-
-
-def save_conversation_memory(session_id, user_message, assistant_response, intent=None, entities=None, importance=0.5):
-    """Save a conversation to memory for learning."""
-    if not session_id:
-        return False
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO conversation_memory (session_id, user_message, assistant_response, intent, entities, importance)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (session_id, user_message[:500], assistant_response[:500] if assistant_response else '', intent, 
-              json.dumps(entities) if entities else None, importance))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"save_conversation_memory error: {e}")
-        return False
-
-
-def get_recent_conversations(session_id, limit=5):
-    """Get recent conversations for context."""
-    if not session_id:
-        return []
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return []
-        
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT user_message, assistant_response, intent, created_at
-            FROM conversation_memory
-            WHERE session_id = %s
-            ORDER BY created_at DESC LIMIT %s
-        """, (session_id, limit))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        return [
-            {
-                'user': row[0],
-                'assistant': row[1],
-                'intent': row[2],
-                'timestamp': str(row[3])
-            }
-            for row in rows
-        ]
-    except Exception as e:
-        print(f"get_recent_conversations error: {e}")
-        return []
-
-
-def learn_from_post(session_id, account_username, content_type='feed'):
-    """Learn from a successful post."""
-    if not session_id:
-        return
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return
-        
-        cur = conn.cursor()
-        # Get current frequency
-        cur.execute("""
-            SELECT frequency_count FROM posting_memory
-            WHERE session_id = %s AND account_username = %s AND content_type = %s
-        """, (session_id, account_username, content_type))
-        row = cur.fetchone()
-        
-        if row:
-            # Update existing
-            cur.execute("""
-                UPDATE posting_memory SET
-                    frequency_count = frequency_count + 1,
-                    last_used_at = CURRENT_TIMESTAMP
-                WHERE session_id = %s AND account_username = %s AND content_type = %s
-            """, (session_id, account_username, content_type))
-        else:
-            # Insert new
-            cur.execute("""
-                INSERT INTO posting_memory (session_id, account_username, content_type, frequency_count)
-                VALUES (%s, %s, %s, 1)
-            """, (session_id, account_username, content_type))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        # Also save as preference
-        save_memory(session_id, 'last_used_account', {'username': account_username}, 'preference')
-        save_memory(session_id, 'last_content_type', content_type, 'preference')
-        
-    except Exception as e:
-        print(f"learn_from_post error: {e}")
-
-
-def update_conversation_context(session_id, user_message, assistant_response, tool_results=None):
-    """Extract and save important information from conversation."""
-    if not session_id:
-        return
-    
-    # Extract intent from user message
-    intent = None
-    entities = {}
-    lower_msg = user_message.lower()
-    
-    # Detect intent
-    if 'post' in lower_msg or 'publish' in lower_msg:
-        intent = 'post'
-    elif 'delete' in lower_msg or 'remove' in lower_msg:
-        intent = 'delete'
-    elif 'fetch' in lower_msg or 'get' in lower_msg:
-        intent = 'fetch'
-    elif 'schedule' in lower_msg:
-        intent = 'schedule'
-    elif 'list' in lower_msg or 'show' in lower_msg:
-        intent = 'list'
-    elif 'login' in lower_msg:
-        intent = 'login'
-    elif 'setup' in lower_msg or 'configure' in lower_msg:
-        intent = 'setup'
-    else:
-        intent = 'general'
-    
-    # Extract entities (simple version)
-    # Check for account mention
-    account_match = re.search(r'@([a-zA-Z0-9._-]+)', user_message)
-    if account_match:
-        entities['mentioned_account'] = account_match.group(1)
-    
-    # Check for vault ID
-    id_match = re.search(r'id\s*[:]?\s*(\d+)', lower_msg)
-    if id_match:
-        entities['vault_id'] = int(id_match.group(1))
-    
-    # Check for platform
-    if 'instagram' in lower_msg or 'ig' in lower_msg:
-        entities['platform'] = 'instagram'
-    elif 'facebook' in lower_msg:
-        entities['platform'] = 'facebook'  # Even though not supported, we track it
-    
-    # Save conversation
-    save_conversation_memory(session_id, user_message, assistant_response[:300], intent, entities)
-    
-    # Save common topics (simple extract)
-    words = user_message.lower().split()
-    common_words = {'post', 'vault', 'instagram', 'account', 'posting', 'image', 'schedule', 'delete'}
-    topics = [w for w in words if w in common_words]
-    if topics:
-        existing_topics = get_memory(session_id, 'common_topics', [])
-        if isinstance(existing_topics, list):
-            existing_topics.extend([t for t in topics if t not in existing_topics])
-            save_memory(session_id, 'common_topics', existing_topics[:10], 'preference')
-
-
-def get_quick_context(session_id):
-    """Get a quick summary of what the AI knows about the user."""
-    if not session_id:
-        return "No session context available."
-    
-    # Get recent conversations
-    recent = get_recent_conversations(session_id, 3)
-    
-    # Get preferences
-    pref_account = get_memory(session_id, 'preferred_account', {})
-    last_account = get_memory(session_id, 'last_used_account', {})
-    post_count = get_memory(session_id, 'posting_frequency', 0)
-    
-    lines = []
-    
-    if pref_account:
-        if isinstance(pref_account, dict):
-            lines.append(f"• User's preferred account: @{pref_account.get('username', 'unknown')}")
-        else:
-            lines.append(f"• User's preferred account: @{pref_account}")
-    elif last_account:
-        if isinstance(last_account, dict):
-            lines.append(f"• User's last used account: @{last_account.get('username', 'unknown')}")
-        else:
-            lines.append(f"• User's last used account: @{last_account}")
-    
-    if post_count:
-        lines.append(f"• User has posted {post_count} times this session")
-    
-    if recent:
-        last_intent = recent[0].get('intent', 'general')
-        lines.append(f"• Last action: {last_intent}")
-    
-    if not lines:
-        return "No user context available yet. Learning from interactions..."
-    
-    return "📌 Context about you:\n" + "\n".join(lines)
-
-
-def clear_all_memory(session_id):
-    """Clear all memory for a session."""
-    if not session_id:
-        return False
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        cur = conn.cursor()
-        cur.execute("DELETE FROM user_memory WHERE session_id = %s", (session_id,))
-        cur.execute("DELETE FROM conversation_memory WHERE session_id = %s", (session_id,))
-        cur.execute("DELETE FROM posting_memory WHERE session_id = %s", (session_id,))
-        cur.execute("DELETE FROM user_preferences WHERE session_id = %s", (session_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"clear_all_memory error: {e}")
-        return False
-
-
-def save_preferred_account(session_id, account_id, username, platform='instagram'):
-    """Save the user's preferred account for a platform."""
-    if not session_id:
-        return False
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO user_preferences (session_id, platform, preferred_account_id, preferred_username, last_used)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (session_id, platform) DO UPDATE SET
-                preferred_account_id = EXCLUDED.preferred_account_id,
-                preferred_username = EXCLUDED.preferred_username,
-                last_used = CURRENT_TIMESTAMP
-        """, (session_id, platform, account_id, username))
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        # Also save in user_memory for quick access
-        save_memory(session_id, 'preferred_account', {'username': username, 'account_id': account_id}, 'preference')
-        return True
-    except Exception as e:
-        print(f"save_preferred_account error: {e}")
-        return False
-
-
-def get_preferred_account(session_id, platform='instagram'):
-    """Get the user's preferred account for a platform."""
-    if not session_id:
-        return None
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return None
-        
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT preferred_account_id, preferred_username 
-            FROM user_preferences 
-            WHERE session_id = %s AND platform = %s
-            ORDER BY last_used DESC LIMIT 1
-        """, (session_id, platform))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if row:
-            return {
-                "account_id": row[0],
-                "username": row[1]
-            }
-        return None
-    except Exception as e:
-        print(f"get_preferred_account error: {e}")
-        return None
 # ============================================================
 # AUTO PILOT (background autonomy)
 # ============================================================
@@ -3559,252 +3033,7 @@ def tool_list_vault(limit: int = 30, handler_handle: str = None) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def tool_list_vault_by_status(status=None, limit=50, offset=0):
-    """List vault items filtered by post status."""
-    conn = get_db_connection()
-    if not conn:
-        return {"success": False, "error": "DB unavailable"}
-    try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        if status == 'unposted':
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       NULL as post_status, NULL as posted_at, NULL as platform_post_id
-                FROM vault v
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM posted_posts p 
-                    WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-                ORDER BY v.saved_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        elif status in ('posted', 'completed'):
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       p.status as post_status, p.posted_at, p.platform_post_id
-                FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-                ORDER BY p.posted_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        elif status == 'scheduled':
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       p.status as post_status, p.posted_at, p.platform_post_id
-                FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-                ORDER BY p.posted_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        else:
-            cur.execute("""
-                SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
-                       v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
-                       v.handler_handle, v.notes,
-                       COALESCE(p.status, 'unposted') as post_status, 
-                       p.posted_at, p.platform_post_id
-                FROM vault v
-                LEFT JOIN posted_posts p ON p.uri = v.uri
-                ORDER BY v.saved_at DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-        
-        rows = cur.fetchall()
-        
-        # Get total count for the filtered query
-        if status == 'unposted':
-            cur.execute("""
-                SELECT COUNT(*) FROM vault v
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM posted_posts p 
-                    WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-            """)
-        elif status in ('posted', 'completed'):
-            cur.execute("""
-                SELECT COUNT(*) FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-            """)
-        elif status == 'scheduled':
-            cur.execute("""
-                SELECT COUNT(*) FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-            """)
-        else:
-            cur.execute("SELECT COUNT(*) FROM vault")
-        
-        total = cur.fetchone()['count']
-        cur.close()
-        conn.close()
-        
-        vault = []
-        for r in rows:
-            vault.append({
-                "id": r['id'],
-                "uri": r['uri'],
-                "author": r['author'],
-                "display_name": r['display_name'],
-                "text": r['text'],
-                "images": r['images'] or [],
-                "video": r['video'],
-                "likes": r['likes'],
-                "reposts": r['reposts'],
-                "replies": r['replies'],
-                "created_at": r['created_at'].isoformat() if r['created_at'] else None,
-                "saved_at": r['saved_at'].isoformat() if r['saved_at'] else None,
-                "handler_handle": r['handler_handle'],
-                "notes": r['notes'],
-                "post_status": r.get('post_status') or 'unposted',
-                "posted_at": r['posted_at'].isoformat() if r.get('posted_at') else None,
-                "platform_post_id": r.get('platform_post_id'),
-            })
-        return {"success": True, "vault": vault, "count": total, "status_filter": status or 'all'}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
-
-def tool_delete_vault_items(ids=None, status=None, all=False):
-    """Delete vault items by ID, by status, or all."""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return {"success": False, "error": "Database unavailable"}
-        
-        cur = conn.cursor()
-        deleted_count = 0
-        deleted_uris = []
-        
-        if ids and isinstance(ids, list):
-            placeholders = ','.join(['%s'] * len(ids))
-            cur.execute(f"SELECT id, uri FROM vault WHERE id IN ({placeholders})", ids)
-            items = cur.fetchall()
-        elif status == 'unposted':
-            cur.execute("""
-                SELECT id, uri FROM vault v
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM posted_posts p 
-                    WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-            """)
-            items = cur.fetchall()
-        elif status in ('posted', 'completed'):
-            cur.execute("""
-                SELECT v.id, v.uri FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-            """)
-            items = cur.fetchall()
-        elif status == 'scheduled':
-            cur.execute("""
-                SELECT v.id, v.uri FROM vault v
-                INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-            """)
-            items = cur.fetchall()
-        elif all:
-            cur.execute("SELECT id, uri FROM vault")
-            items = cur.fetchall()
-        else:
-            return {"success": False, "error": "Specify ids, status, or all=True"}
-        
-        if not items:
-            cur.close()
-            conn.close()
-            return {"success": True, "deleted_count": 0, "message": "No items to delete"}
-        
-        for item in items:
-            item_id, uri = item
-            cur.execute("DELETE FROM posted_posts WHERE uri = %s", (uri,))
-            cur.execute("DELETE FROM vault WHERE id = %s", (item_id,))
-            deleted_count += 1
-            deleted_uris.append(uri)
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        return {
-            "success": True,
-            "deleted_count": deleted_count,
-            "deleted_uris": deleted_uris,
-            "message": f"Deleted {deleted_count} item(s) from vault"
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def tool_post_unposted(account_id=None, account_username=None, limit=10):
-    """Post all unposted vault items to Instagram."""
-    # Check accounts first
-    if not account_id and not account_username:
-        accounts_result = tool_list_accounts('instagram')
-        accounts_list = accounts_result.get('accounts', [])
-        
-        if not accounts_list:
-            return {"success": False, "error": "No Instagram accounts connected"}
-        
-        if len(accounts_list) == 1:
-            account_username = accounts_list[0].get('username')
-            account_id = accounts_list[0].get('account_id')
-        else:
-            account_names = [f"@{a.get('username') or a.get('display_name')}" for a in accounts_list]
-            return {
-                "success": False,
-                "needs_account": True,
-                "accounts": accounts_list,
-                "message": f"You have {len(accounts_list)} Instagram accounts: {', '.join(account_names)}. Which one do you want to post to?",
-                "error": "Multiple accounts found - please choose one"
-            }
-    
-    result = tool_list_vault_by_status(status='unposted', limit=limit)
-    if not result.get('success'):
-        return result
-    
-    items = result.get('vault', [])
-    if not items:
-        return {"success": True, "posted_count": 0, "message": "No unposted items to post"}
-    
-    posted = 0
-    errors = []
-    results = []
-    
-    for item in items:
-        res = tool_post_now(
-            vault_id=item.get('id'),
-            account_id=account_id,
-            account_username=account_username
-        )
-        
-        # Check if the response needs account selection
-        if res.get('needs_account'):
-            return res  # Pass the account selection request back up
-        
-        results.append(res)
-        if res.get('success'):
-            posted += 1
-        else:
-            errors.append(res.get('error', 'Unknown error'))
-        time.sleep(1.5)
-    
-    return {
-        "success": posted > 0,
-        "posted_count": posted,
-        "total": len(items),
-        "results": results,
-        "errors": errors,
-        "message": f"Posted {posted}/{len(items)} unposted items to Instagram (@{account_username or 'selected account'})"
-    }
 def tool_remove_from_vault(uri: str) -> dict:
     """Remove a post from the vault by URI."""
     try:
@@ -4077,6 +3306,8 @@ def tool_list_api_keys():
 
 
 
+
+
 def tool_post_now(
     vault_id: int = None,
     uri: str = None,
@@ -4090,6 +3321,8 @@ def tool_post_now(
     """
     Post a vault item (or raw image) to social media.
     Posts to Instagram via Zernio only.
+    Prefer vault_id (integer from list_vault). 
+    Optional account_username e.g. 'easternfrontdaily' for Zernio platforms.
     """
     if not platforms:
         platforms = ['instagram']
@@ -4104,50 +3337,7 @@ def tool_post_now(
         return {"success": False, "error": "No valid platforms specified"}
     
     try:
-        # ============================================================
-        # STEP 1: CHECK FOR MULTIPLE ACCOUNTS
-        # ============================================================
-        if not account_id and not account_username:
-            # Get Instagram accounts
-            accounts_result = tool_list_accounts('instagram')
-            accounts_list = accounts_result.get('accounts', [])
-            
-            if not accounts_list:
-                return {
-                    "success": False,
-                    "error": "No Instagram accounts connected",
-                    "needs_account": True,
-                    "message": "No Instagram accounts are connected. Please connect an account in Zernio first.",
-                    "accounts": []
-                }
-            
-            if len(accounts_list) == 1:
-                # Auto-use the only account
-                account_username = accounts_list[0].get('username')
-                account_id = accounts_list[0].get('account_id')
-                print(f"✅ Auto-using the only Instagram account: @{account_username}")
-            else:
-                # Multiple accounts - ask user to choose
-                account_names = []
-                for a in accounts_list:
-                    name = a.get('username') or a.get('display_name') or a.get('account_id')
-                    account_names.append(f"@{name}")
-                
-                # Return a special response that tells the caller to ask the user
-                return {
-                    "success": False,
-                    "needs_account": True,
-                    "accounts": accounts_list,
-                    "message": f"You have {len(accounts_list)} Instagram accounts. Which one do you want to post to?\n\n" + 
-                               "\n".join([f"  • {name}" for name in account_names]),
-                    "error": "Multiple accounts found - please choose one",
-                    "_account_names": account_names,
-                    "_account_list": accounts_list
-                }
-
-        # ============================================================
-        # STEP 2: RESOLVE VAULT ROW
-        # ============================================================
+        # Resolve vault row by id or uri
         if (vault_id or uri) and not image_url:
             conn = get_db_connection()
             if not conn:
@@ -4164,7 +3354,7 @@ def tool_post_now(
                 return {"success": False, "error": f"Vault post not found (id={vault_id}, uri={uri})"}
             vault_id, uri, text, images, author = row
             
-            # Check if already posted
+            # Check if already posted to any of the requested platforms
             already_posted = []
             for p in platforms:
                 if is_post_already_posted(uri, p):
@@ -4182,44 +3372,48 @@ def tool_post_now(
         if not image_url:
             return {"success": False, "error": "Provide vault_id, uri, or image_url"}
 
-        # ============================================================
-        # STEP 3: RESOLVE ACCOUNT ID
-        # ============================================================
-        if account_id and not _looks_like_zernio_id(account_id):
+        results = []
+        
+        # Split platforms by strategy
+        zernio_platforms = ['instagram']
+        bluesky_platform = 'bluesky'
+        
+        zernio_to_post = [p for p in platforms if p in zernio_platforms]
+        bluesky_to_post = [p for p in platforms if p == bluesky_platform]
+        
+        # 1. Post to Instagram via Zernio
+        if zernio_to_post:
+            # Auto-pick first Instagram account if username not given
             if not account_username:
-                account_username = account_id
-            account_id = None
-        
-        if not account_id and account_username:
-            account_id = resolve_zernio_account_id(account_id, account_username, 'instagram')
-        
-        if not account_id:
-            # Try to resolve by username with fuzzy matching
-            accounts_result = tool_list_accounts('instagram')
-            accounts_list = accounts_result.get('accounts', [])
-            for acc in accounts_list:
-                if account_username and account_username.lower() in (acc.get('username') or '').lower():
-                    account_id = acc.get('account_id')
-                    account_username = acc.get('username')
-                    break
-            
+                try:
+                    conn_a = get_db_connection()
+                    if conn_a:
+                        cur_a = conn_a.cursor()
+                        cur_a.execute(
+                            "SELECT username FROM zernio_accounts WHERE platform='instagram' AND is_active=TRUE AND username IS NOT NULL ORDER BY username LIMIT 1"
+                        )
+                        row_a = cur_a.fetchone()
+                        cur_a.close()
+                        conn_a.close()
+                        if row_a and row_a[0]:
+                            account_username = row_a[0]
+                except Exception:
+                    pass
+            if not account_username:
+                return {
+                    "success": False,
+                    "error": "No Instagram account connected. Connect one in Zernio first.",
+                    "message": "I couldn’t post — no Instagram account is connected yet."
+                }
+
+            account_id = resolve_zernio_account_id(account_id, account_username, zernio_to_post[0])
             if not account_id:
                 return {
                     "success": False,
                     "error": f"Could not resolve account '{account_username}'.",
-                    "message": f"I couldn't find Instagram @{account_username}. Check connected accounts.",
-                    "needs_account": True,
-                    "accounts": accounts_list
+                    "message": f"I couldn’t find Instagram @{account_username}. Check connected accounts."
                 }
 
-        # ============================================================
-        # STEP 4: POST TO INSTAGRAM
-        # ============================================================
-        results = []
-        zernio_platforms = ['instagram']
-        zernio_to_post = [p for p in platforms if p in zernio_platforms]
-        
-        if zernio_to_post:
             print(f"📤 post_now vault_id={vault_id} account={account_id} platforms={zernio_to_post} type={content_type}")
 
             zernio_result = post_to_zernio_multi_platform(
@@ -4239,20 +3433,16 @@ def tool_post_now(
                     "platforms": zernio_to_post,
                     "success": True,
                     "message": f"✅ Posted to Instagram",
-                    "post_id": zernio_result.get('post_id'),
-                    "account_username": account_username
+                    "post_id": zernio_result.get('post_id')
                 })
             else:
                 results.append({
                     "platforms": zernio_to_post,
                     "success": False,
-                    "error": zernio_result.get('error'),
-                    "account_username": account_username
+                    "error": zernio_result.get('error')
                 })
 
-        # ============================================================
-        # STEP 5: BUILD RESPONSE
-        # ============================================================
+        # Build response
         success_platforms = []
         failed_platforms = []
         for r in results:
@@ -4264,7 +3454,7 @@ def tool_post_now(
         cap_preview = (caption or '').strip().replace('\n', ' ')
         if len(cap_preview) > 120:
             cap_preview = cap_preview[:120] + "…"
-        
+        # author is set when loading from vault; may be undefined for raw image posts
         try:
             _author = author
         except NameError:
@@ -4272,24 +3462,12 @@ def tool_post_now(
 
         if success_platforms:
             who = f" from @{_author}" if _author else ""
-            account_display = f" (@{account_username})" if account_username else ""
-            
-            account_display_name = account_username
-            if account_id:
-                accounts_result = tool_list_accounts('instagram')
-                accounts_list = accounts_result.get('accounts', [])
-                for acc in accounts_list:
-                    if acc.get('account_id') == account_id:
-                        account_display_name = acc.get('display_name') or acc.get('username')
-                        break
-            
             msg = (
-                f"✅ Done — I just published vault id {vault_id}{who} to Instagram"
-                + f" (@{account_display_name})"
+                f"Done — I just published vault id {vault_id}{who} to Instagram"
+                + (f" (@{account_username})" if account_username else "")
                 + ".\n"
                 + (f"Caption: “{cap_preview}”" if cap_preview else "No caption on that one.")
             )
-            
             global _last_chat_action
             _last_chat_action = {
                 "type": "post",
@@ -4298,7 +3476,6 @@ def tool_post_now(
                 "author": _author,
                 "caption": cap_preview,
                 "account_username": account_username,
-                "account_id": account_id,
                 "platforms": success_platforms,
                 "content_type": content_type,
                 "at": datetime.now().isoformat(),
@@ -4309,7 +3486,7 @@ def tool_post_now(
                 if r.get('error'):
                     err = r.get('error')
                     break
-            msg = f"❌ I couldn't publish that post. {err or 'Unknown error.'}"
+            msg = f"I couldn’t publish that post. {err or 'Unknown error.'}"
 
         return {
             "success": len(success_platforms) > 0,
@@ -4320,13 +3497,14 @@ def tool_post_now(
             "uri": uri,
             "caption": caption,
             "account_username": account_username,
-            "account_id": account_id,
             "message": msg,
         }
 
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e), "message": f"Post failed: {e}"}
+
+
 
 
 
@@ -4451,6 +3629,9 @@ def get_account_id_for_platform(platform, account_id=None):
 
 
 
+
+
+
 def tool_post_vault_batch(
     vault_ids: list = None,
     count: int = None,
@@ -4458,28 +3639,10 @@ def tool_post_vault_batch(
     account_id: str = None,
     account_username: str = None
 ) -> dict:
-    """Post multiple vault items now."""
-    # Check accounts first
-    if not account_id and not account_username:
-        accounts_result = tool_list_accounts('instagram')
-        accounts_list = accounts_result.get('accounts', [])
-        
-        if not accounts_list:
-            return {"success": False, "error": "No Instagram accounts connected"}
-        
-        if len(accounts_list) == 1:
-            account_username = accounts_list[0].get('username')
-            account_id = accounts_list[0].get('account_id')
-        else:
-            account_names = [f"@{a.get('username') or a.get('display_name')}" for a in accounts_list]
-            return {
-                "success": False,
-                "needs_account": True,
-                "accounts": accounts_list,
-                "message": f"You have {len(accounts_list)} Instagram accounts: {', '.join(account_names)}. Which one do you want to post to?",
-                "error": "Multiple accounts found - please choose one"
-            }
-    
+    """
+    Post multiple vault items now.
+    Pass vault_ids=[1,2] or count=2 (latest N from vault).
+    """
     try:
         ids = list(vault_ids) if vault_ids else []
         if not ids and count:
@@ -4503,11 +3666,6 @@ def tool_post_vault_batch(
                 account_id=account_id,
                 account_username=account_username
             )
-            
-            # Check if the response needs account selection
-            if r.get('needs_account'):
-                return r  # Pass the account selection request back up
-            
             results.append({"vault_id": vid, **r})
             if r.get('success'):
                 ok += 1
@@ -4517,11 +3675,12 @@ def tool_post_vault_batch(
             "posted_count": ok,
             "failed_count": len(ids) - ok,
             "results": results,
-            "message": f"Posted {ok}/{len(ids)} vault item(s) to Instagram (@{account_username or 'selected account'})"
+            "message": f"Posted {ok}/{len(ids)} vault item(s) to Instagram"
         }
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
 
 def generate_random_schedule_times(start_date, end_date, total_posts, min_hours_between=2, tz=None):
     if tz is None:
@@ -4903,11 +4062,6 @@ TOOL_MAP = {
     "fetch_posts": tool_fetch_posts,
     "add_to_vault": tool_add_to_vault,
     "list_vault": tool_list_vault,
-    # ===== NEW VAULT MANAGEMENT TOOLS =====
-    "list_vault_by_status": tool_list_vault_by_status,
-    "delete_vault_items": tool_delete_vault_items,
-    "post_unposted": tool_post_unposted,
-    # ===== END NEW VAULT MANAGEMENT TOOLS =====
     "remove_from_vault": tool_remove_from_vault,
     "get_status": tool_get_status,
     "list_accounts": tool_list_accounts,
@@ -4928,6 +4082,7 @@ TOOL_MAP = {
     "delete_account": tool_delete_account_permanently,
     "delete_all_accounts": tool_delete_all_accounts_permanently,
 }
+
 
 
 
@@ -5052,78 +4207,6 @@ TOOLS_SCHEMA = [
             }
         }
     },
-    # ===== NEW VAULT MANAGEMENT TOOLS =====
-    {
-        "type": "function",
-        "function": {
-            "name": "list_vault_by_status",
-            "description": "List vault items filtered by post status. Use 'unposted' for items not yet posted, 'posted' for already posted, 'scheduled' for scheduled, or 'all' for everything.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["unposted", "posted", "scheduled", "all"],
-                        "description": "Filter by post status"
-                    },
-                    "limit": {"type": "integer", "default": 50},
-                    "offset": {"type": "integer", "default": 0}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_vault_items",
-            "description": "PERMANENTLY delete vault items by status or all. Use with caution! This cannot be undone. ALWAYS confirm with the user before deleting.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["unposted", "posted", "scheduled", "all"],
-                        "description": "Delete items by status"
-                    },
-                    "ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "List of vault IDs to delete"
-                    },
-                    "all": {
-                        "type": "boolean",
-                        "description": "Delete ALL vault items (requires confirmation)"
-                    }
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "post_unposted",
-            "description": "Post all unposted vault items to Instagram immediately",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "account_username": {
-                        "type": "string",
-                        "description": "Instagram account username to post to"
-                    },
-                    "account_id": {
-                        "type": "string",
-                        "description": "Instagram account ID (optional)"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 10,
-                        "description": "Max number of items to post"
-                    }
-                }
-            }
-        }
-    },
-    # ===== END NEW VAULT MANAGEMENT TOOLS =====
     {
         "type": "function",
         "function": {
@@ -5364,6 +4447,18 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     # ===== ACCOUNT DELETION TOOLS =====
     {
         "type": "function",
@@ -5390,6 +4485,8 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    
+    
     {
         "type": "function",
         "function": {
@@ -5411,6 +4508,24 @@ TOOLS_SCHEMA = [
             }
         }
     }
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 ]
 
 
@@ -5425,223 +4540,132 @@ TOOLS_SCHEMA = [
 
 
 
-SYSTEM_PROMPT = """You are the AI assistant for Bluesky AI Vault - a social media automation tool.
 
-===========================================
-CORE FUNCTIONALITY:
-===========================================
-- Source: Bluesky (fetch posts)
-- Destination: Instagram ONLY (via Zernio)
-- Facebook, Threads, TikTok, Twitter are NOT supported
-- Timezone: Africa/Nairobi
 
-===========================================
-LOCAL MEMORY FEATURES - I CAN REMEMBER:
-===========================================
-I have a local memory system that learns about you to provide a personalized experience:
 
-1. **Preferred Account**: I remember which Instagram account you prefer to post to
-2. **Posting Patterns**: I learn from your posting history (frequency, content types)
-3. **Common Topics**: I track what you're interested in
-4. **Conversation History**: I remember recent conversations for context
-5. **Last Used Account**: I remember which account you used most recently
 
-You can ask me:
-- "What do you know about me?" - See what I remember
-- "Forget everything" - Clear my memory
-- "Remember @account_name" - Set a preferred account
-- "What's my preferred account?" - Check your current preference
 
-I will automatically use your preferred account when posting, so you don't have to specify it every time!
 
-===========================================
-CRITICAL - HANDLING TOOL RESPONSES:
-===========================================
-When a tool returns a response, you MUST check for these special flags:
+SYSTEM_PROMPT = """You are the AI assistant for Bluesky AI Vault.
 
-1. **"needs_account": True** - User has multiple Instagram accounts
-   → Check if user has a preferred account saved
-   → If YES: "Using your preferred account: @[account]" and post
-   → If NO: "You have [N] accounts: [names]. Which one?"
-   → After user chooses, REMEMBER it!
+This service only does: Bluesky fetch → vault → Instagram (via Zernio).
+Facebook and Threads are NOT supported. Do not mention them or offer to connect them.
 
-2. **"requires_confirmation": True** - Action needs user confirmation
-   → You MUST re-prompt the user with the confirmation question
-   → Example: "Reply with YES_DELETE_ALL to confirm"
 
-3. **"confirmation_code": "YES_DELETE_ALL"** - User must reply with exact code
-   → Tell the user: "Reply with YES_DELETE_ALL to confirm"
 
-===========================================
-MULTIPLE ACCOUNTS FLOW WITH MEMORY:
-===========================================
-When the user wants to POST something (post_now, post_unposted, post_vault_batch):
 
-STEP 1: Check if the user specified an account:
-- "post id 5 to easternfrontdaily" → use account_username="easternfrontdaily"
-- "post unposted to Daily Wisdom" → use account_username="Daily Wisdom"
-
-STEP 2: If NO account was specified:
-- Check if user has a PREFERRED ACCOUNT saved in memory
-- If YES → "Using your preferred account: @[account]" (do NOT ask!)
-- If NO → Call list_accounts() to see how many exist
-  - If ONLY 1 account → use it automatically, mention: "Posting to @[account_name]"
-  - If MULTIPLE accounts → ASK: "You have [N] Instagram accounts: [list]. Which one?"
-
-STEP 3: After user chooses, REMEMBER the choice for next time
-
-STEP 4: Wait for the user's response before posting.
-
-===========================================
-VAULT MANAGEMENT COMMANDS:
-===========================================
-- "list unposted" or "show unposted" → list_vault_by_status(status="unposted")
-- "list posted" or "show posted" → list_vault_by_status(status="posted")
-- "list scheduled" or "show scheduled" → list_vault_by_status(status="scheduled")
-- "list all vault" or "show all vault" → list_vault_by_status(status="all")
-- "post unposted" → post_unposted() (uses preferred account if set)
-- "post count 5" → post_unposted(limit=5)
-- "delete unposted" → delete_vault_items(status="unposted") (needs confirmation)
-- "delete posted" → delete_vault_items(status="posted") (needs confirmation)
-- "delete scheduled" → delete_vault_items(status="scheduled") (needs confirmation)
-- "delete all vault" → delete_vault_items(all=True) (⚠️ Requires: YES_DELETE_ALL)
-- "delete vault id 1,2,3" → delete_vault_items(ids=[1,2,3])
-- "post id 5" → post_now(vault_id=5) (uses preferred account if set)
-- "post 3 from vault" → post_vault_batch(count=3) (uses preferred account if set)
-
-When showing vault items, include status icons:
-   ✅ = posted, ⏳ = scheduled, ⬜ = unposted
-
-For posting, always mention which account was used.
-
-===========================================
 ACCOUNT DELETION (PERMANENT - USE WITH CAUTION):
-===========================================
-- "delete account @username permanently" → delete_account(account_identifier="username")
+- "delete account @username permanently" → call delete_account(account_identifier="username")
 - "remove forever" / "erase account" / "delete permanently" → delete_account()
-- "delete all accounts permanently" → FIRST confirm, then delete_all_accounts(confirm="YES_DELETE_ALL")
+- "delete all accounts permanently" → FIRST confirm, then call delete_all_accounts(confirm="YES_DELETE_ALL")
 - ⚠️ PERMANENT means: removes account, vault posts, and posted history. CANNOT BE UNDONE.
-- ALWAYS confirm with the user before deleting.
-- Use list_accounts() first if unclear which account to delete.
+- ALWAYS confirm with the user before deleting if they seem unsure.
+- Use list_accounts() first if the user isn't clear which account to delete.
+- After deletion, the account can be re-added by refreshing accounts from Zernio API keys.
 
-===========================================
-API KEYS vs ACCOUNTS (DO NOT CONFUSE):
-===========================================
-- "API keys" / "Zernio keys" / "how many keys" → ALWAYS call list_api_keys()
-  Never answer this with list_accounts. Keys and accounts are different!
-- "Accounts" / "which Instagram" / "connected accounts" → call list_accounts()
-- User PASTES a key (sk_...) or says "check this key" → 
-  ALWAYS call check_zernio_key(api_key="sk_...") with the exact key
 
-===========================================
+
+
+
+
+
+
+
+CRITICAL — API KEYS vs ACCOUNTS (do not confuse them):
+- "API keys" / "Zernio keys" / "how many keys" → ALWAYS call list_api_keys() (reads .env).
+  Never answer this with list_accounts. Keys and accounts are different things.
+- "Accounts" / "which Instagram" / "connected accounts" → call list_accounts().
+- User PASTES a key (sk_...) or says "check this key / accounts for this key" →
+  ALWAYS call check_zernio_key(api_key="sk_...") with the exact key they provided.
+  List only the accounts on THAT key. Do not invent accounts.
+
+WHEN USER ASKS about API keys (examples: "how many api keys", "list keys"):
+1. Call list_api_keys() — do NOT call list_accounts.
+2. Report the real count from .env and accounts per key.
+
+WHEN USER PROVIDES A KEY:
+- Example: "check sk_5ac94ab..." or just pastes sk_...
+- Call check_zernio_key(api_key="<full key>")
+- Reply with validity + every account username/platform/id on that key.
+
+Do NOT invent key counts or account lists.
+
 PLATFORMS:
-===========================================
-- Instagram (via Zernio) → destination for posts; accounts from Zernio API keys in .env
-- Bluesky (AT Protocol) → source only: login/fetch posts into vault (NOT a posting target)
+- Instagram (via Zernio) — destination for posts; accounts come from Zernio API keys in .env
+- Bluesky (AT Protocol) — source only: login/fetch posts into the vault (not a posting target in this app)
+
+ACCOUNT HELP:
+- Connected Instagram accounts: call list_accounts()
+- Bluesky: "Login with [handle] and [app-password]" then fetch posts
+- For "how many API keys" use list_api_keys() — NOT list_accounts
+
+HARD RULE — Posting:
+- You CAN post to Instagram when Zernio accounts are connected
 - Default (and only) platform is Instagram
+- Never offer Facebook, Threads, or multi-platform "post everywhere"
 
-===========================================
-REPLY STYLE (CRITICAL):
-===========================================
-- NEVER paste raw JSON, tool dumps, or {"success":...} into your reply
-- ALWAYS summarize tool results in short plain English
-- For list_accounts: say the usernames only, not the full JSON
-- For confirmation: clearly tell the user what to reply
-- For multiple accounts: list them clearly and ask which one
-- For memory: confirm when you remember something (e.g., "✅ I'll remember @account for future posts")
-- Be friendly, concise, and helpful
-- Use emojis sparingly to make responses more readable
+When the user gives a clear actionable request, call the right tools. Do not only pretend.
+When the request is vague (e.g. "add a pipeline"), ask clarifying questions first — do not call tools until you have the details.
 
-===========================================
-EXAMPLE CONVERSATIONS WITH MEMORY:
-===========================================
-User: "post id 5"
-(First time - no preferred account, 2 accounts exist)
-You: "You have 2 Instagram accounts: @TheEasternFront and @Serpent. Which one do you want to post to?"
+Core workflow:
+1. login / restore_session (Bluesky — needed to fetch)
+2. fetch_posts(session_id, actor, limit)
+3. add_to_vault(session_id=...) to save last fetch
+4. post_now / post_vault_batch for immediate Instagram posts
+5. schedule_bulk for delayed Instagram posts
+6. auto_setup + auto_start for hands-free Bluesky → Instagram
+7. auto_remove to permanently delete a pipeline
 
-User: "TheEasternFront"
-You: "✅ Done — posted to Instagram (@TheEasternFront). 
-I'll remember @TheEasternFront as your preferred account for future posts."
-
-User: "post id 6"
-(Now has preferred account)
-You: "✅ Done — posted to Instagram (@TheEasternFront) using your preferred account."
-
-User: "what do you know about me?"
-You: "📌 Context about you:
-• User's preferred account: @TheEasternFront
-• User has posted 3 times this session
-• Last action: post"
-
-User: "forget everything"
-You: "🧹 I've cleared all memories about you. I'll start fresh!"
-
-User: "remember @Serpent"
-You: "✅ I'll remember @Serpent as your preferred account for future posts."
-
-===========================================
-AUTONOMY (pipelines):
-===========================================
-- Each Bluesky source is its own pipeline with a unique name
-- auto_status lists ALL pipelines
-- auto_remove(name="scorpio") permanently deletes that pipeline
+CRITICAL — stop vs remove:
 - "Stop auto" / "stop pipeline X" → auto_stop (disables, keeps config)
-- "Remove pipeline X" / "delete pipeline scorpio" → auto_remove (deletes forever)
+- "Remove pipeline X" / "delete pipeline scorpio" → auto_remove(name="scorpio") (deletes forever)
+- Never use auto_stop when user says remove/delete. Never use auto_remove when user says stop.
 
-===========================================
-ADDING A NEW PIPELINE:
-===========================================
-- If user says "add a pipeline" WITHOUT full details → Ask clarifying questions
-- Minimum required: source_handle (Bluesky) + account_username (Instagram)
-- Defaults: poll_interval_sec=300, max_posts_per_run=1, content_type=feed, enabled=true
-- As soon as BOTH are known, call auto_setup once
+CRITICAL — Posting:
+- Post to Instagram through Zernio. Account usernames are in Context.
+- When user says "post now", "post id 2", "post the first 2", "post this to Instagram", "yes" → call post_now or post_vault_batch with platforms=["instagram"].
+- Do NOT only call list_vault when the user already asked to post.
+- Prefer vault_id (integer from list_vault). For multiple: post_vault_batch(vault_ids=[1,2], account_username="...").
+- If the user wants to post a vault image and did not specify which, list_vault once then post_now with the chosen vault_id.
+- Default content_type = "feed".
 
-===========================================
-SCHEDULING:
-===========================================
-- schedule_bulk(count=N, period="week", platforms=["instagram"])
-- Prefer count to take the latest N posts
-- Always ask which account when multiple accounts exist (unless preferred account is set)
+PLATFORM EXAMPLES:
+- "Post id 5 to Instagram" → post_now(vault_id=5, platforms=["instagram"], account_username="<ig_username>")
+- "Post id 5 to Facebook/Threads" → "Only Instagram is supported. I can post id 5 to Instagram if you want."
 
-===========================================
-OTHER COMMANDS:
-===========================================
-- "status" → get_status
-- "list accounts" → list_accounts()
-- "login with handle and app-password" → login()
-- "fetch 10 posts from @handle" → fetch_posts()
-- "save them to vault" → add_to_vault()
-- "list scheduled" → list_scheduled()
+AUTONOMY (multiple pipelines supported):
+- Each Bluesky source is its own pipeline with a unique name (auto-named from the handle).
+- To run TWO sources at once, call auto_setup TWICE with different source_handle values, then auto_start.
+  Example: auto_setup(name="dailymotivator", source_handle="dailymotivator.bsky.social", account_username="easternfrontdaily", enabled=true)
+           auto_setup(name="coreiq", source_handle="coreiq.bsky.social", account_username="easternfrontdaily", enabled=true)
+- auto_status lists ALL pipelines.
+- auto_remove(name="scorpio") permanently deletes that pipeline.
+- Prefer the existing logged-in Bluesky session for fetching.
 
-===========================================
-MEMORY MANAGEMENT COMMANDS:
-===========================================
-- "what do you know about me" → Shows all saved preferences
-- "forget everything" → Clears all memory
-- "remember @account" → Sets preferred account
-- "what's my preferred account" → Shows current preference
+ADDING A NEW PIPELINE (conversational — critical):
+- If the user says "add a pipeline" WITHOUT full details → DO NOT call any tools. Ask in plain chat.
+- Account names are in Context — use the connected Instagram accounts.
+- Collect only missing fields one step at a time. Defaults if user skips: poll_interval_sec=300, max_posts_per_run=1, content_type=feed, enabled=true.
+- Minimum required: source_handle (Bluesky) + account_username (Instagram account).
+- As soon as BOTH are known, call auto_setup once.
+- Example: user said source=spacecowboy17.bsky.social then destination=easternfrontdaily → immediately:
+  auto_setup(name="spacecowboy17", source_handle="spacecowboy17.bsky.social", account_username="easternfrontdaily", enabled=true)
+- After auto_setup succeeds, briefly confirm the pipeline in plain English.
 
-===========================================
-REMEMBER:
-===========================================
-- Timezone is Africa/Nairobi
-- Only Instagram posting is supported
-- Always check for preferred account before asking which account
-- Always confirm destructive actions
-- Be concise and helpful
-- Learn from interactions - remember user preferences
-- NEVER invent success - report tool results honestly
-- NEVER paste raw JSON in your reply
+REPLY STYLE (critical):
+- NEVER paste raw JSON, tool dumps, or {"success":...} into the user-facing reply.
+- Always summarize tool results in short plain English.
+- For list_accounts: say the usernames only, not the full JSON.
+- Prefer a short friendly conversation over calling tools for vague requests.
+- Be HONEST about what's connected. Only Instagram posting is supported.
 
-===========================================
-YOUR PERSONALITY:
-===========================================
-- You are helpful, friendly, and efficient
-- You remember user preferences to make interactions smoother
-- You proactively suggest actions based on context
-- You explain what you're doing in simple terms
-- You confirm important actions before executing them
-- You learn from every interaction to improve future responses"""
+Other rules:
+- "save them / save to vault" → add_to_vault(session_id=...) only.
+- Status questions → get_status or list_vault.
+- Scheduling → schedule_bulk(count=N, period="week", platforms=["instagram"]).
+- Be concise. Report tool results honestly. Never invent success.
+- Timezone: Africa/Nairobi.
+"""
 
 
 
@@ -5713,8 +4737,7 @@ def _quick_chat_context(session_id=None):
     return bits
 
 
-def execute_tool(name, arguments, session_id=None):
-    """Execute a tool by name with arguments."""
+def execute_tool(name, arguments):
     fn = TOOL_MAP.get(name)
     if not fn:
         return {"success": False, "error": f"Unknown tool: {name}"}
@@ -5722,161 +4745,7 @@ def execute_tool(name, arguments, session_id=None):
         # arguments may arrive as string
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
-        
-        # Handle tools that need session_id
-        if name in ['fetch_posts', 'add_to_vault']:
-            return fn(**arguments, session_id=session_id) if session_id else fn(**arguments)
-        
-        # Special handling for tools that need special processing
-        if name == 'login':
-            return fn(arguments.get('username'), arguments.get('password'))
-        
-        if name == 'restore_session':
-            return fn(arguments.get('handle'))
-        
-        if name == 'fetch_posts':
-            if not session_id and arguments.get('session_id'):
-                session_id = arguments.get('session_id')
-            if not session_id:
-                return {"success": False, "error": "Login first"}
-            return fn(
-                session_id,
-                arguments.get('actor'),
-                limit=int(arguments.get('limit') or 20),
-                media_only=bool(arguments.get('media_only', True)),
-                include_reposts=bool(arguments.get('include_reposts', False))
-            )
-        
-        if name == 'add_to_vault':
-            posts = []
-            if session_id and session_id in sessions:
-                posts = sessions[session_id].get('_last_fetched') or []
-            return fn(posts, handler_handle=sessions.get(session_id, {}).get('_last_actor'))
-        
-        if name == 'list_vault':
-            return fn(limit=int(arguments.get('limit') or 30))
-        
-        # ===== NEW VAULT MANAGEMENT TOOLS =====
-        if name == 'list_vault_by_status':
-            return fn(
-                status=arguments.get('status', 'all'),
-                limit=int(arguments.get('limit', 50)),
-                offset=int(arguments.get('offset', 0))
-            )
-        
-        if name == 'delete_vault_items':
-            # Require confirmation for "delete all"
-            if arguments.get('all'):
-                confirm = arguments.get('confirm')
-                if confirm != 'YES_DELETE_ALL':
-                    return {
-                        "success": False, 
-                        "error": "Confirmation required",
-                        "message": "⚠️ This will permanently delete ALL vault items. Reply with 'YES_DELETE_ALL' to confirm."
-                    }
-            return fn(
-                ids=arguments.get('ids'),
-                status=arguments.get('status'),
-                all=arguments.get('all', False)
-            )
-        
-        if name == 'post_unposted':
-            return fn(
-                account_username=arguments.get('account_username'),
-                account_id=arguments.get('account_id'),
-                limit=int(arguments.get('limit', 10))
-            )
-        # ===== END NEW VAULT MANAGEMENT TOOLS =====
-        
-        if name == 'post_now':
-            return fn(
-                vault_id=arguments.get('vault_id'),
-                uri=arguments.get('uri'),
-                image_url=arguments.get('image_url'),
-                caption=arguments.get('caption'),
-                content_type=arguments.get('content_type', 'feed'),
-                platforms=arguments.get('platforms', ['instagram']),
-                account_id=arguments.get('account_id'),
-                account_username=arguments.get('account_username')
-            )
-        
-        if name == 'post_vault_batch':
-            return fn(
-                vault_ids=arguments.get('vault_ids'),
-                count=arguments.get('count'),
-                content_type=arguments.get('content_type', 'feed'),
-                account_id=arguments.get('account_id'),
-                account_username=arguments.get('account_username')
-            )
-        
-        if name == 'schedule_bulk':
-            return fn(
-                uris=arguments.get('uris'),
-                count=arguments.get('count'),
-                period=arguments.get('period', 'week'),
-                start_date=arguments.get('start_date'),
-                min_hours_between=arguments.get('min_hours_between', 2),
-                content_type=arguments.get('content_type', 'feed'),
-                platforms=arguments.get('platforms', ['instagram']),
-                account_id=arguments.get('account_id')
-            )
-        
-        if name == 'list_accounts':
-            return fn(platform=arguments.get('platform'))
-        
-        if name == 'auto_setup':
-            return fn(
-                name=arguments.get('name'),
-                source_handle=arguments.get('source_handle'),
-                account_username=arguments.get('account_username'),
-                account_id=arguments.get('account_id'),
-                poll_interval_sec=arguments.get('poll_interval_sec', 300),
-                max_posts_per_run=arguments.get('max_posts_per_run', 2),
-                content_type=arguments.get('content_type', 'feed'),
-                media_only=bool(arguments.get('media_only', True)),
-                include_reposts=bool(arguments.get('include_reposts', False)),
-                bluesky_handle=arguments.get('bluesky_handle'),
-                bluesky_app_password=arguments.get('bluesky_app_password'),
-                enabled=arguments.get('enabled', True)
-            )
-        
-        if name == 'auto_start':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'auto_stop':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'auto_run_now':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'auto_remove':
-            return fn(name=arguments.get('name'))
-        
-        if name == 'check_zernio_key':
-            return fn(
-                api_key=arguments.get('api_key'),
-                save_to_db=arguments.get('save_to_db', True)
-            )
-        
-        if name == 'get_api_key_status':
-            return fn(key_index=arguments.get('key_index'))
-        
-        if name == 'delete_account':
-            return fn(
-                account_identifier=arguments.get('account_identifier'),
-                account_id=arguments.get('account_id'),
-                platform=arguments.get('platform', 'instagram')
-            )
-        
-        if name == 'delete_all_accounts':
-            return fn(
-                platform=arguments.get('platform'),
-                confirm=arguments.get('confirm')
-            )
-        
-        # For any other tool, just call it directly
         return fn(**arguments)
-        
     except TypeError as e:
         return {"success": False, "error": f"Bad arguments for {name}: {e}"}
     except Exception as e:
@@ -5912,7 +4781,7 @@ def chat():
 
 
 def handle_chat_json():
-    """Handle JSON chat requests with local memory integration."""
+    """Handle JSON chat requests (existing functionality)"""
     data = request.json or {}
     user_message = (data.get('message') or '').strip()
     history = data.get('history') or []
@@ -5922,242 +4791,9 @@ def handle_chat_json():
     if not user_message:
         return jsonify({"success": False, "error": "Empty message"}), 400
 
-    # ============================================================
-    # LOCAL MEMORY INTEGRATION - Create/Initialize Session
-    # ============================================================
-    
-    # Create session if it doesn't exist
-    if not session_id:
-        session_id = str(uuid.uuid4())
-    
-    # Initialize session in memory if not exists
-    if session_id not in sessions:
-        sessions[session_id] = {}
-    
-    # ============================================================
-    # CHECK IF USER IS RESPONDING TO ACCOUNT SELECTION
-    # ============================================================
-    if session_id and session_id in sessions:
-        pending_action = sessions[session_id].get('_pending_action')
-        if pending_action and pending_action.get('needs_account'):
-            # Check if user is selecting an account
-            account_selection = None
-            
-            # Pattern: "first", "second", "1st", "2nd", "account 1", "account 2"
-            number_match = re.search(r'(?:account\s*)?(?:number\s*)?([1-9])(?:st|nd|rd|th)?\b', user_message.lower())
-            if number_match:
-                account_selection = int(number_match.group(1)) - 1
-            
-            # Pattern: username like @easternfrontdaily or easternfrontdaily
-            if account_selection is None:
-                username_match = re.search(r'@?([a-zA-Z0-9._-]+)', user_message)
-                if username_match:
-                    potential_username = username_match.group(1)
-                    accounts_result = tool_list_accounts('instagram')
-                    accounts_list = accounts_result.get('accounts', [])
-                    for i, acc in enumerate(accounts_list):
-                        acc_username = acc.get('username', '')
-                        if potential_username.lower() == acc_username.lower():
-                            account_selection = i
-                            break
-            
-            if account_selection is not None:
-                accounts_result = tool_list_accounts('instagram')
-                accounts_list = accounts_result.get('accounts', [])
-                
-                if account_selection < len(accounts_list):
-                    selected_account = accounts_list[account_selection]
-                    account_username = selected_account.get('username')
-                    account_id = selected_account.get('account_id')
-                    
-                    # ===== SAVE TO MEMORY =====
-                    # Save as preferred account
-                    save_preferred_account(session_id, account_id, account_username, 'instagram')
-                    save_memory(session_id, 'preferred_account', {
-                        'username': account_username,
-                        'account_id': account_id
-                    }, 'preference', confidence=1.0)
-                    
-                    # Also save to session for quick access
-                    sessions[session_id]['preferred_account'] = account_username
-                    
-                    # Execute the pending action
-                    if pending_action.get('action') == 'post_now':
-                        result = tool_post_now(
-                            vault_id=pending_action.get('vault_id'),
-                            uri=pending_action.get('uri'),
-                            image_url=pending_action.get('image_url'),
-                            caption=pending_action.get('caption'),
-                            content_type=pending_action.get('content_type', 'feed'),
-                            platforms=['instagram'],
-                            account_id=account_id,
-                            account_username=account_username
-                        )
-                        
-                        # Learn from successful post
-                        if result.get('success'):
-                            learn_from_post(session_id, account_username, pending_action.get('content_type', 'feed'))
-                            post_count = get_memory(session_id, 'posting_frequency', 0)
-                            save_memory(session_id, 'posting_frequency', post_count + 1, 'preference')
-                            # Save conversation memory
-                            save_conversation_memory(session_id, user_message, result.get('message', ''), 'post', 
-                                                     {'account': account_username, 'vault_id': pending_action.get('vault_id')})
-                        
-                        sessions[session_id]['_pending_action'] = None
-                        
-                        return jsonify({
-                            "success": True,
-                            "reply": result.get('message', 'Posted successfully!'),
-                            "tool_results": [{"name": "post_now", "result": result}],
-                            "chat_key": chat_key,
-                            "session_id": session_id,
-                            "memory_updated": True
-                        })
-                    
-                    elif pending_action.get('action') == 'post_unposted':
-                        result = tool_post_unposted(
-                            account_id=account_id,
-                            account_username=account_username,
-                            limit=pending_action.get('limit', 10)
-                        )
-                        
-                        if result.get('success'):
-                            learn_from_post(session_id, account_username, 'feed')
-                            save_conversation_memory(session_id, user_message, result.get('message', ''), 'post_unposted',
-                                                     {'account': account_username})
-                        
-                        sessions[session_id]['_pending_action'] = None
-                        
-                        return jsonify({
-                            "success": True,
-                            "reply": result.get('message', 'Posted successfully!'),
-                            "tool_results": [{"name": "post_unposted", "result": result}],
-                            "chat_key": chat_key,
-                            "session_id": session_id,
-                            "memory_updated": True
-                        })
-                    
-                    elif pending_action.get('action') == 'post_vault_batch':
-                        result = tool_post_vault_batch(
-                            vault_ids=pending_action.get('vault_ids'),
-                            count=pending_action.get('count'),
-                            content_type=pending_action.get('content_type', 'feed'),
-                            account_id=account_id,
-                            account_username=account_username
-                        )
-                        
-                        if result.get('success'):
-                            learn_from_post(session_id, account_username, pending_action.get('content_type', 'feed'))
-                            save_conversation_memory(session_id, user_message, result.get('message', ''), 'post_batch',
-                                                     {'account': account_username})
-                        
-                        sessions[session_id]['_pending_action'] = None
-                        
-                        return jsonify({
-                            "success": True,
-                            "reply": result.get('message', 'Posted successfully!'),
-                            "tool_results": [{"name": "post_vault_batch", "result": result}],
-                            "chat_key": chat_key,
-                            "session_id": session_id,
-                            "memory_updated": True
-                        })
-
-    # ---- HARD PRE-ROUTE: Memory Commands ----
+    # ---- HARD PRE-ROUTE: keys / full account list (do not trust Gemini) ----
     lower_msg = user_message.lower()
 
-    # ===== MEMORY COMMANDS =====
-    if 'what do you know about me' in lower_msg or 'what do you remember' in lower_msg or 'tell me about me' in lower_msg:
-        context = get_quick_context(session_id)
-        return jsonify({
-            "success": True,
-            "reply": context,
-            "tool_results": [],
-            "chat_key": chat_key,
-            "session_id": session_id,
-            "used_memory": True
-        })
-
-    if 'forget everything' in lower_msg or 'clear memory' in lower_msg or 'delete my memory' in lower_msg:
-        if clear_all_memory(session_id):
-            # Also clear session data
-            if session_id in sessions:
-                sessions[session_id] = {}
-            return jsonify({
-                "success": True,
-                "reply": "🧹 I've cleared all memories about you. I'll start fresh!",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id,
-                "memory_cleared": True
-            })
-        else:
-            return jsonify({
-                "success": True,
-                "reply": "❌ Could not clear memory. Please try again.",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-
-    if 'remember this account' in lower_msg or 'use this by default' in lower_msg or 'make this my default' in lower_msg:
-        # Try to find the account mentioned
-        account_match = re.search(r'@([a-zA-Z0-9._-]+)', user_message)
-        if account_match:
-            account_username = account_match.group(1)
-            # Verify account exists
-            accounts_result = tool_list_accounts('instagram')
-            accounts_list = accounts_result.get('accounts', [])
-            for acc in accounts_list:
-                if acc.get('username', '').lower() == account_username.lower():
-                    save_preferred_account(session_id, acc.get('account_id'), account_username, 'instagram')
-                    save_memory(session_id, 'preferred_account', {
-                        'username': account_username,
-                        'account_id': acc.get('account_id')
-                    }, 'preference', confidence=1.0)
-                    sessions[session_id]['preferred_account'] = account_username
-                    return jsonify({
-                        "success": True,
-                        "reply": f"✅ I'll remember @{account_username} as your preferred account for future posts.",
-                        "tool_results": [],
-                        "chat_key": chat_key,
-                        "session_id": session_id,
-                        "memory_updated": True
-                    })
-            return jsonify({
-                "success": True,
-                "reply": f"I couldn't find @{account_username} in your connected accounts. Try 'list accounts' to see what's available.",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-        return jsonify({
-            "success": True,
-            "reply": "Which account would you like me to remember? Say: 'Remember @account_name'",
-            "tool_results": [],
-            "chat_key": chat_key,
-            "session_id": session_id
-        })
-
-    if 'what\'s my preferred account' in lower_msg or 'which account do i use' in lower_msg:
-        pref = get_preferred_account(session_id, 'instagram')
-        if pref:
-            return jsonify({
-                "success": True,
-                "reply": f"📌 Your preferred Instagram account is @{pref.get('username')}",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-        else:
-            return jsonify({
-                "success": True,
-                "reply": "📌 You don't have a preferred account set yet. When you post, I'll ask which account to use, or you can say 'Remember @account_name'",
-                "tool_results": [],
-                "chat_key": chat_key,
-                "session_id": session_id
-            })
-
-    # ---- HARD PRE-ROUTE: keys / full account list (do not trust Gemini) ----
     # User pasted a Zernio key (sk_...) → check THAT key's accounts
     sk_match = re.search(r'(sk_[A-Za-z0-9]{20,})', user_message)
     if sk_match or (
@@ -6218,39 +4854,17 @@ def handle_chat_json():
             "used_pre_route": True,
         })
 
-    # ============================================================
-    # BUILD MESSAGES WITH MEMORY CONTEXT
-    # ============================================================
-    
-    # Build messages for the model
+    # Build messages for the model (lean context = faster Gemini)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Add memory context
-    memory_context = get_quick_context(session_id)
-    if memory_context and "No user context" not in memory_context:
-        messages.append({"role": "system", "content": f"User Memory:\n{memory_context}"})
-    
-    # Check if user has a preferred account - use it automatically
-    preferred = get_preferred_account(session_id, 'instagram')
-    if preferred:
-        messages.append({"role": "system", "content": f"User's preferred Instagram account: @{preferred.get('username')}. Use this account by default unless the user specifies otherwise."})
-
-    # Add recent conversations for context
-    recent_conv = get_recent_conversations(session_id, 3)
-    if recent_conv:
-        conv_context = "Recent conversations:\n"
-        for conv in recent_conv[:3]:
-            conv_context += f"- User: {conv['user'][:100]}\n"
-            conv_context += f"  Assistant: {conv['assistant'][:100]}\n"
-        messages.append({"role": "system", "content": conv_context})
 
     context_bits = _quick_chat_context(session_id)
     if context_bits:
-        messages.append({"role": "system", "content": "Current Status:\n" + "\n".join(context_bits)})
+        messages.append({"role": "system", "content": "Context:\n" + "\n".join(context_bits)})
 
-    # Add history
+    # Fewer history turns → less prompt tokens → faster
     for h in history[-6:]:
         if h.get('role') in ('user', 'assistant') and h.get('content'):
+            # Cap very long past messages
             content = h['content']
             if len(content) > 800:
                 content = content[:800] + "…"
@@ -6258,25 +4872,23 @@ def handle_chat_json():
 
     messages.append({"role": "user", "content": user_message})
 
-    # ---- Call Gemini ----
+    # ---- Call Gemini (single round-trip preferred) ----
     response_data, err = call_gemini(messages, tools=TOOLS_SCHEMA, max_tokens=700, timeout=35)
 
     if err:
         print(f"⚠️ Gemini error: {err}")
-        # Fallback: simple keyword routing
+        # Fallback: simple keyword routing so the service still works without AI
         fallback = simple_fallback(user_message, session_id)
         reply = fallback
         if "No GEMINI_API_KEYS" not in err and "not configured" not in err:
             reply = f"{fallback}\n\n(AI error: {err})"
 
+        # If login succeeded in fallback, pull the newest session_id
         new_sid = session_id
         if '✅' in fallback and 'Session ID:' in fallback:
             m = re.search(r'Session ID:\s*(\S+)', fallback)
             if m:
                 new_sid = m.group(1)
-
-        # Save the conversation even on error
-        save_conversation_memory(session_id, user_message, reply[:300], 'fallback')
 
         return jsonify({
             "success": True,
@@ -6290,96 +4902,34 @@ def handle_chat_json():
     choice = response_data['choices'][0]['message']
     tool_calls = choice.get('tool_calls') or []
 
-    # Execute tools if any
+    # Execute tools if any — reply from local summary (skip 2nd Gemini call = ~2x faster)
     tool_results = []
     if tool_calls:
         for tc in tool_calls:
             name = tc['function']['name']
-            try:
-                args = json.loads(tc['function'].get('arguments', '{}'))
-            except:
-                args = {}
-            
+            args = tc['function'].get('arguments', '{}')
             print(f"🔧 Tool call: {name}({args})")
             result = execute_tool(name, args)
             tool_results.append({"name": name, "result": result})
-            
-            # ============================================================
-            # CHECK IF TOOL NEEDS ACCOUNT SELECTION
-            # ============================================================
-            if result.get('needs_account'):
-                # Store the pending action in the session
-                if session_id and session_id in sessions:
-                    sessions[session_id]['_pending_action'] = {
-                        'needs_account': True,
-                        'action': name,
-                        'vault_id': args.get('vault_id'),
-                        'uri': args.get('uri'),
-                        'image_url': args.get('image_url'),
-                        'caption': args.get('caption'),
-                        'content_type': args.get('content_type', 'feed'),
-                        'count': args.get('count'),
-                        'vault_ids': args.get('vault_ids'),
-                        'limit': args.get('limit', 10),
-                    }
-                else:
-                    if not session_id:
-                        session_id = str(uuid.uuid4())
-                    sessions[session_id] = {}
-                    sessions[session_id]['_pending_action'] = {
-                        'needs_account': True,
-                        'action': name,
-                        'vault_id': args.get('vault_id'),
-                        'uri': args.get('uri'),
-                        'image_url': args.get('image_url'),
-                        'caption': args.get('caption'),
-                        'content_type': args.get('content_type', 'feed'),
-                        'count': args.get('count'),
-                        'vault_ids': args.get('vault_ids'),
-                        'limit': args.get('limit', 10),
-                    }
-                
-                return jsonify({
-                    "success": True,
-                    "reply": result.get('message', 'Please select an account.'),
-                    "tool_results": tool_results,
-                    "chat_key": chat_key,
-                    "session_id": session_id,
-                    "needs_account": True,
-                    "accounts": result.get('accounts', [])
-                })
-            
-            # ============================================================
-            # LEARN FROM SUCCESSFUL ACTIONS
-            # ============================================================
-            if result.get('success') and name in ['post_now', 'post_unposted', 'post_vault_batch']:
-                # Learn from successful post
-                account_username = args.get('account_username')
-                if account_username:
-                    learn_from_post(session_id, account_username, args.get('content_type', 'feed'))
-                    # Increment post count
-                    post_count = get_memory(session_id, 'posting_frequency', 0)
-                    save_memory(session_id, 'posting_frequency', post_count + 1, 'preference')
 
-        # Prefer tool's own message field
+        # Prefer tool's own message field; otherwise format_tool_summary
         reply = format_tool_summary(tool_results)
+        # If the first model also returned text, prepend briefly (rare with tool_choice auto)
         extra = (choice.get('content') or '').strip()
         if extra and len(extra) < 200 and extra not in reply:
             reply = f"{extra}\n\n{reply}" if reply else extra
     else:
         reply = choice.get('content') or "I'm not sure what to do with that."
 
-    # Save conversation to memory
-    save_conversation_memory(session_id, user_message, reply[:300], 'general')
-
     return jsonify({
         "success": True,
         "reply": reply,
         "tool_results": tool_results,
         "chat_key": chat_key,
-        "session_id": session_id,
-        "memory_updated": True
+        "session_id": session_id
     })
+
+
 # ============================================================
 # HANDLE CHAT WITH IMAGE UPLOAD
 # ============================================================
@@ -6784,194 +5334,37 @@ def process_image_with_ai(image_path, message, history, session_id, chat_key):
 
 
 
+
+
 def format_tool_summary(tool_results):
-    """Human-readable summary with proper vault formatting."""
+    """Human-readable summary with image references."""
     parts = []
     for tr in tool_results:
         name = tr.get('name')
         r = tr.get('result') or {}
-        
         if not r.get('success'):
-            parts.append(f"❌ {name}: {r.get('error') or r.get('message') or 'failed'}")
+            parts.append(f"❌ {name}: {r.get('error') or 'failed'}")
             continue
-        
-        # ===== HANDLE VAULT LISTING TOOLS =====
-        if name in ['list_vault', 'list_vault_by_status']:
-            items = r.get('vault') or []
-            count = r.get('count') or len(items)
-            status_filter = r.get('status_filter', 'all')
-            
-            if count == 0:
-                status_display = status_filter if status_filter != 'all' else ''
-                parts.append(f"📦 No {status_display} posts in vault." if status_display else "📦 Your vault is empty right now.")
-            else:
-                status_emoji = {'unposted': '⬜', 'posted': '✅', 'scheduled': '⏳', 'all': '📦'}
-                emoji = status_emoji.get(status_filter, '📦')
-                status_label = status_filter if status_filter != 'all' else ''
-                
-                lines = [f"{emoji} Vault has **{count}** {status_label} post(s):"]
-                for i, item in enumerate(items[:5], 1):
-                    text = (item.get('text') or '').strip()
-                    if len(text) > 70:
-                        text = text[:70] + "..."
-                    if not text:
-                        text = "(image only)"
-                    img_count = len(item.get('images') or [])
-                    img_text = f" 📸{img_count}" if img_count > 0 else ""
-                    author = f" @{item.get('author', '?')}"
-                    status_icon = {
-                        'unposted': '⬜', 
-                        'posted': '✅', 
-                        'scheduled': '⏳'
-                    }.get(item.get('post_status', 'unposted'), '')
-                    lines.append(f"  {i}. {status_icon} id={item.get('id')} {text}{img_text}{author}")
-                
-                if len(items) > 5:
-                    lines.append(f"  ...and {len(items) - 5} more")
-                
-                parts.append("\n".join(lines))
+        if r.get('message'):
+            parts.append(r['message'])
             continue
-        
-        # ===== HANDLE SCHEDULED LIST =====
         if name == 'list_scheduled':
             items = r.get('scheduled') or []
             if not items:
-                parts.append("📅 No scheduled posts.")
+                parts.append("No scheduled posts.")
             else:
-                lines = [f"📅 Scheduled ({r.get('count')}):"]
+                lines = [f"Scheduled ({r.get('count')}):"]
                 for it in items:
                     img_indicator = " 📸" if it.get('has_image') else ""
                     lines.append(f"• {it.get('scheduled_for')} — {(it.get('text') or '')[:60]}{img_indicator}")
                 parts.append("\n".join(lines))
-            continue
-        
-        # ===== HANDLE POST UNPOSTED =====
-        if name == 'post_unposted':
-            posted_count = r.get('posted_count', 0)
-            total = r.get('total', 0)
-            if posted_count > 0:
-                parts.append(f"✅ Posted {posted_count}/{total} unposted items to Instagram")
-            else:
-                errors = r.get('errors', [])
-                if errors:
-                    parts.append(f"❌ Failed to post: {', '.join(errors[:3])}")
-                else:
-                    parts.append("📦 No unposted items to post")
-            continue
-        
-        # ===== HANDLE DELETE VAULT ITEMS =====
-        if name == 'delete_vault_items':
-            deleted = r.get('deleted_count', 0)
-            if deleted > 0:
-                parts.append(f"🗑️ Permanently deleted {deleted} item(s) from vault")
-            else:
-                parts.append("📦 No items to delete")
-            continue
-        
-        # ===== HANDLE POST NOW =====
-        if name == 'post_now':
-            if r.get('success'):
-                platforms = r.get('platforms', ['instagram'])
-                parts.append(f"✅ Posted to {', '.join(platforms)} successfully!")
-                if r.get('message'):
-                    parts.append(r.get('message'))
-            else:
-                parts.append(f"❌ Post failed: {r.get('error', 'Unknown error')}")
-            continue
-        
-        # ===== HANDLE ACCOUNTS =====
-        if name == 'list_accounts':
-            accounts = r.get('accounts') or []
-            if not accounts:
-                parts.append("📱 No connected Instagram accounts")
-            else:
-                lines = [f"📱 Instagram accounts ({len(accounts)}):"]
-                for a in accounts[:10]:
-                    label = a.get('display_name') or a.get('username') or a.get('account_id')
-                    lines.append(f"  • @{label}")
-                if len(accounts) > 10:
-                    lines.append(f"  ...and {len(accounts) - 10} more")
-                parts.append("\n".join(lines))
-            continue
-        
-        # ===== HANDLE AUTO STATUS =====
-        if name == 'auto_status':
-            running = r.get('running', False)
-            pipelines = r.get('pipelines', [])
-            enabled_count = len([p for p in pipelines if p.get('enabled')])
-            status = "🟢 RUNNING" if running else "🔴 STOPPED"
-            parts.append(f"🤖 Auto pilot: {status} · {enabled_count} pipeline(s) enabled")
-            if pipelines:
-                for p in pipelines[:5]:
-                    state = '🟢' if p.get('enabled') else '🔴'
-                    src = p.get('source_handle', '?')
-                    dest = p.get('account_username', '?')
-                    interval = p.get('poll_interval_sec', 300)
-                    parts.append(f"  {state} {p.get('name')}: @{src} → @{dest} ({interval}s)")
-            continue
-        
-        # ===== HANDLE API KEYS =====
-        if name == 'list_api_keys':
-            keys = r.get('keys', [])
-            total_accounts = r.get('total_accounts', 0)
-            parts.append(f"🔑 {len(keys)} Zernio API key(s) configured · {total_accounts} account(s)")
-            for k in keys[:3]:
-                env_var = k.get('env_var', f"ZERNIO_API_KEY{k.get('index', '?')}")
-                key_preview = k.get('key', '')[:16] + '…' if k.get('key') else 'None'
-                accounts = k.get('accounts', [])
-                acc_names = [f"@{a.get('username')}" for a in accounts if a.get('username')]
-                acc_str = ', '.join(acc_names) if acc_names else 'no accounts'
-                parts.append(f"  • {env_var}: {key_preview} → {acc_str}")
-            if len(keys) > 3:
-                parts.append(f"  ...and {len(keys) - 3} more")
-            continue
-        
-        # ===== HANDLE CHECK ZERNIO KEY =====
-        if name == 'check_zernio_key':
-            if r.get('valid'):
-                count = r.get('count', 0)
-                parts.append(f"✅ Valid key · {count} account(s)")
-                accounts = r.get('accounts', [])
-                for a in accounts[:5]:
-                    parts.append(f"  • @{a.get('username')} ({a.get('platform')})")
-                if len(accounts) > 5:
-                    parts.append(f"  ...and {len(accounts) - 5} more")
-            else:
-                parts.append(f"❌ {r.get('message', 'Invalid key')}")
-            continue
-        
-        # ===== HANDLE STATUS =====
-        if name == 'get_status':
-            vault = r.get('vault_count', 0)
-            posted = r.get('posted_count', 0)
-            scheduled = r.get('scheduled_count', 0)
-            accounts = r.get('accounts_count', 0)
-            handle = r.get('active_handle', 'None')
-            lines = [
-                f"📊 Status:",
-                f"  • Vault: {vault} posts",
-                f"  • Posted: {posted}",
-                f"  • Scheduled: {scheduled}",
-                f"  • Instagram accounts: {accounts}",
-                f"  • Bluesky session: @{handle}" if handle and handle != 'None' else "  • Bluesky session: None"
-            ]
-            parts.append("\n".join(lines))
-            continue
-        
-        # ===== FALLBACK =====
-        # For any other tool, show a brief summary
-        if r.get('message'):
-            parts.append(r['message'])
         else:
-            # Extract key values for a summary
-            summary_keys = ['posted_count', 'saved', 'scheduled_count', 'count', 'handle', 'deleted_count']
-            short = {k: v for k, v in r.items() if k in summary_keys and v is not None}
-            if short:
-                parts.append(f"{name}: " + ", ".join(f"{k}={v}" for k, v in short.items()))
-            else:
-                parts.append(f"✅ {name} completed")
-    
+            short = {k: v for k, v in r.items() if k in ('posted_count', 'saved', 'scheduled_count', 'count', 'handle') and v is not None}
+            parts.append(f"{name}: " + (", ".join(f"{k}={v}" for k, v in short.items()) or "OK"))
     return "\n".join(parts) if parts else "Done."
+
+
+
 
 
 
