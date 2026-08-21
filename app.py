@@ -1010,7 +1010,47 @@ def init_db():
 
 
 init_db()
+# ============================================================
+# CRON CONTROL (Start/Stop via Database)
+# ============================================================
 
+def get_cron_state():
+    """Get cron enabled state from database."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return True  # Default to enabled
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key = 'cron_enabled'")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return row[0].lower() == 'true'
+        return True
+    except Exception:
+        return True
+
+def set_cron_state(enabled: bool):
+    """Save cron enabled state to database."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('cron_enabled', %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET 
+                value = EXCLUDED.value,
+                updated_at = CURRENT_TIMESTAMP
+        """, ('true' if enabled else 'false',))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✅ Cron state set to: {'ENABLED' if enabled else 'DISABLED'}")
+    except Exception as e:
+        print(f"Error saving cron state: {e}")
 # ============================================================
 # AUTO PILOT (background autonomy)
 # ============================================================
