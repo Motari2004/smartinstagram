@@ -6852,7 +6852,32 @@ def api_delete_all_accounts():
 
 
 
-
+@app.route('/api/cron/auto-run', methods=['GET'])
+def cron_auto_run():
+    """
+    Vercel cron endpoint - runs auto pilot on a schedule.
+    Called automatically by Vercel's cron job system.
+    """
+    try:
+        # Run ALL enabled pipelines once
+        result = tool_auto_run_now()
+        
+        # Log what happened
+        print(f"🔄 Cron auto-run: {result.get('message', 'done')}")
+        
+        return jsonify({
+            "success": True,
+            "result": result,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        print(f"❌ Cron auto-run error: {e}")
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 
 
