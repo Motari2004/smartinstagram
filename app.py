@@ -986,7 +986,15 @@ def init_db():
                 UNIQUE(config_name, platform)
             )
         ''')
-
+# Add app_settings table for cron control
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS app_settings (
+        id SERIAL PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+''')
         conn.commit()
         cur.close()
         conn.close()
@@ -1010,7 +1018,46 @@ def init_db():
 
 
 init_db()
+# ============================================================
+# CRON CONTROL (Start/Stop via Database)
+# ============================================================
 
+def get_cron_state():
+    """Get cron enabled state from database."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return True  # Default to enabled
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key = 'cron_enabled'")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return row[0].lower() == 'true'
+        return True
+    except Exception:
+        return True
+
+def set_cron_state(enabled: bool):
+    """Save cron enabled state to database."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('cron_enabled', %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET 
+                value = EXCLUDED.value,
+                updated_at = CURRENT_TIMESTAMP
+        """, ('true' if enabled else 'false',))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving cron state: {e}")
 # ============================================================
 # AUTO PILOT (background autonomy)
 # ============================================================
@@ -6855,9 +6902,21 @@ def api_delete_all_accounts():
 def api_auto_run_now():
     """
     External cron trigger endpoint for cron-job.org.
-    This runs all enabled auto pipelines.
+    Checks if cron is enabled before running.
     """
     try:
+        # Check if cron is enabled
+        cron_enabled = get_cron_state()
+        
+        if not cron_enabled:
+            print(f"⏸️ Cron is paused (cron_enabled=False)")
+            return jsonify({
+                "success": True,
+                "paused": True,
+                "message": "Cron is paused. Use /api/cron/start to resume.",
+                "timestamp": datetime.now().isoformat()
+            })
+        
         # Run ALL enabled pipelines once
         result = tool_auto_run_now()
         
@@ -6889,7 +6948,58 @@ def api_health():
 
 
 
+# ============================================================
+# CRON CONTROL ENDPOINTS
+# ============================================================
 
+@app.route('/api/cron/start', methods=['POST'])
+def api_cron_start():
+    """Enable the cron job."""
+    set_cron_state(True)
+    return jsonify({
+        "success": True,
+        "message": "✅ Cron enabled. Will process on next trigger.",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/api/cron/stop', methods=['POST'])
+def api_cron_stop():
+    """Disable the cron job."""
+    set_cron_state(False)
+    return jsonify({
+        "success": True,
+        "message": "⏸️ Cron paused. Will skip processing until started again.",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/api/cron/status', methods=['GET'])
+def api_cron_status():
+    """Get full cron status with pipelines."""
+    cron_enabled = get_cron_state()
+    
+    # Get pipeline status
+    configs = _list_auto_configs()
+    enabled_pipelines = [c for c in configs if c.get('enabled')]
+    
+    return jsonify({
+        "success": True,
+        "cron_enabled": cron_enabled,
+        "cron_status": "RUNNING" if cron_enabled else "PAUSED",
+        "pipelines_total": len(configs),
+        "pipelines_enabled": len(enabled_pipelines),
+        "pipelines": [
+            {
+                "name": c.get('name'),
+                "enabled": c.get('enabled', False),
+                "source": c.get('source_handle'),
+                "destination": c.get('account_username'),
+                "last_result": c.get('last_result'),
+                "last_error": c.get('last_error')
+            }
+            for c in configs
+        ],
+        "timestamp": datetime.now().isoformat()
+    })
 
 # Vercel serverless compatibility - ADD THIS AT THE VERY BOTTOM OF THE FILE
 # This allows Vercel to import the app as a module
