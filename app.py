@@ -986,15 +986,7 @@ def init_db():
                 UNIQUE(config_name, platform)
             )
         ''')
-# Add app_settings table for cron control
-cur.execute('''
-    CREATE TABLE IF NOT EXISTS app_settings (
-        id SERIAL PRIMARY KEY,
-        key TEXT UNIQUE NOT NULL,
-        value TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-''')
+
         conn.commit()
         cur.close()
         conn.close()
@@ -1018,46 +1010,7 @@ cur.execute('''
 
 
 init_db()
-# ============================================================
-# CRON CONTROL (Start/Stop via Database)
-# ============================================================
 
-def get_cron_state():
-    """Get cron enabled state from database."""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return True  # Default to enabled
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM app_settings WHERE key = 'cron_enabled'")
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row:
-            return row[0].lower() == 'true'
-        return True
-    except Exception:
-        return True
-
-def set_cron_state(enabled: bool):
-    """Save cron enabled state to database."""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO app_settings (key, value, updated_at)
-            VALUES ('cron_enabled', %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (key) DO UPDATE SET 
-                value = EXCLUDED.value,
-                updated_at = CURRENT_TIMESTAMP
-        """, ('true' if enabled else 'false',))
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Error saving cron state: {e}")
 # ============================================================
 # AUTO PILOT (background autonomy)
 # ============================================================
@@ -6898,29 +6851,19 @@ def api_delete_all_accounts():
 
 
 
-@app.route('/api/auto/run-now', methods=['GET'])
-def api_auto_run_now():
+
+@app.route('/api/cron/auto-run', methods=['GET'])
+def cron_auto_run():
     """
-    External cron trigger endpoint for cron-job.org.
-    Checks if cron is enabled before running.
+    Vercel cron endpoint - runs auto pilot on a schedule.
+    Called automatically by Vercel's cron job system.
     """
     try:
-        # Check if cron is enabled
-        cron_enabled = get_cron_state()
-        
-        if not cron_enabled:
-            print(f"⏸️ Cron is paused (cron_enabled=False)")
-            return jsonify({
-                "success": True,
-                "paused": True,
-                "message": "Cron is paused. Use /api/cron/start to resume.",
-                "timestamp": datetime.now().isoformat()
-            })
-        
         # Run ALL enabled pipelines once
         result = tool_auto_run_now()
         
-        print(f"🔄 Cron triggered: {result.get('message', 'done')}")
+        # Log what happened
+        print(f"🔄 Cron auto-run: {result.get('message', 'done')}")
         
         return jsonify({
             "success": True,
@@ -6928,7 +6871,7 @@ def api_auto_run_now():
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
-        print(f"❌ Cron error: {e}")
+        print(f"❌ Cron auto-run error: {e}")
         traceback.print_exc()
         return jsonify({
             "success": False,
@@ -6937,14 +6880,8 @@ def api_auto_run_now():
         }), 500
 
 
-@app.route('/api/health', methods=['GET'])
-def api_health():
-    """Health check endpoint for uptime monitoring."""
-    return jsonify({
-        "status": "ok",
-        "timestamp": datetime.now().isoformat(),
-        "pipelines_enabled": len([c for c in _list_auto_configs() if c.get('enabled')])
-    })
+
+
 
 
 
