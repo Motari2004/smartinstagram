@@ -770,6 +770,8 @@ def get_db_connection():
 
 
 
+
+
 def init_db():
     conn = get_db_connection()
     if not conn:
@@ -946,16 +948,6 @@ def init_db():
             )
         ''')
 
-        # ===== ADD NICHE AND SOURCE_HANDLES COLUMNS =====
-        try:
-            cur.execute("ALTER TABLE auto_config ADD COLUMN IF NOT EXISTS niche TEXT")
-            cur.execute("ALTER TABLE auto_config ADD COLUMN IF NOT EXISTS source_handles JSONB")
-            print("✅ Added niche and source_handles columns to auto_config")
-        except psycopg2.errors.DuplicateColumn:
-            print("ℹ️ Columns already exist in auto_config")
-        except Exception as e:
-            print(f"⚠️ Migration note: {e}")
-
         cur.execute('''
             CREATE TABLE IF NOT EXISTS auto_seen (
                 id SERIAL PRIMARY KEY,
@@ -1010,6 +1002,7 @@ def init_db():
     except Exception as e:
         print(f"❌ DB init error: {e}")
         traceback.print_exc()
+
 
 
 
@@ -1080,20 +1073,9 @@ def _load_auto_config(name='default'):
             conn.close()
             return None
         cols = [d[0] for d in cur.description]
-        cfg = dict(zip(cols, row))
-        
-        # Normalize sources: if source_handles exists, use it; else use single source
-        if cfg.get('source_handles'):
-            if isinstance(cfg['source_handles'], str):
-                cfg['source_handles'] = json.loads(cfg['source_handles'])
-        elif cfg.get('source_handle'):
-            cfg['source_handles'] = [cfg['source_handle']]
-        else:
-            cfg['source_handles'] = []
-        
         cur.close()
         conn.close()
-        return cfg
+        return dict(zip(cols, row))
     except Exception as e:
         print(f"load auto_config: {e}")
         return None
@@ -1122,29 +1104,22 @@ def _save_auto_config(cfg: dict):
         if not conn:
             return False
         cur = conn.cursor()
-        
-        # Convert source_handles to JSON if present
-        source_handles_json = None
-        if cfg.get('source_handles'):
-            source_handles_json = Json(cfg['source_handles'])
-        
         cur.execute('''
             INSERT INTO auto_config (
-                name, enabled, source_handle, source_handles, niche,
-                account_id, account_username, content_type, media_only, 
-                include_reposts, max_posts_per_run, bluesky_handle, 
-                bluesky_app_password, last_run_at, last_error, last_result, updated_at
+                name, enabled, source_handle, account_id, account_username,
+                content_type, poll_interval_sec, media_only, include_reposts,
+                max_posts_per_run, bluesky_handle, bluesky_app_password,
+                last_run_at, last_error, last_result, updated_at
             ) VALUES (
-                %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP
+                %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP
             )
             ON CONFLICT (name) DO UPDATE SET
                 enabled = EXCLUDED.enabled,
                 source_handle = COALESCE(EXCLUDED.source_handle, auto_config.source_handle),
-                source_handles = COALESCE(EXCLUDED.source_handles, auto_config.source_handles),
-                niche = COALESCE(EXCLUDED.niche, auto_config.niche),
                 account_id = COALESCE(EXCLUDED.account_id, auto_config.account_id),
                 account_username = COALESCE(EXCLUDED.account_username, auto_config.account_username),
                 content_type = COALESCE(EXCLUDED.content_type, auto_config.content_type),
+                poll_interval_sec = COALESCE(EXCLUDED.poll_interval_sec, auto_config.poll_interval_sec),
                 media_only = COALESCE(EXCLUDED.media_only, auto_config.media_only),
                 include_reposts = COALESCE(EXCLUDED.include_reposts, auto_config.include_reposts),
                 max_posts_per_run = COALESCE(EXCLUDED.max_posts_per_run, auto_config.max_posts_per_run),
@@ -1158,11 +1133,10 @@ def _save_auto_config(cfg: dict):
             cfg.get('name', 'default'),
             bool(cfg.get('enabled', False)),
             cfg.get('source_handle'),
-            source_handles_json,
-            cfg.get('niche'),
             cfg.get('account_id'),
             cfg.get('account_username'),
             cfg.get('content_type', 'feed'),
+            int(cfg.get('poll_interval_sec') or 300),
             bool(cfg.get('media_only', True)),
             bool(cfg.get('include_reposts', False)),
             int(cfg.get('max_posts_per_run') or 2),
@@ -1273,7 +1247,8 @@ def _get_bluesky_client_for_auto(cfg):
 
 
 def run_auto_once(name='default'):
-    """One autonomous cycle: fetch from ALL sources in niche → vault → post."""
+    """One autonomous cycle: fetch new posts → vault → post to Instagram."""
+    # Always re-check .env for Zernio keys before posting
     key_status = ensure_zernio_keys_loaded(for_auto=True)
     if not key_status.get('success'):
         return {
@@ -1288,10 +1263,9 @@ def run_auto_once(name='default'):
     if not cfg.get('enabled'):
         return {"success": False, "error": "Auto pilot is disabled", "skipped": True}
 
-    # Get ALL sources from this niche
-    sources = cfg.get('source_handles') or []
-    if not sources:
-        return {"success": False, "error": "No source handles configured"}
+    source = cfg.get('source_handle')
+    if not source:
+        return {"success": False, "error": "source_handle not set"}
 
     client, session_id = _get_bluesky_client_for_auto(cfg)
     if not client or not session_id:
@@ -1300,58 +1274,42 @@ def run_auto_once(name='default'):
         return {"success": False, "error": msg}
 
     try:
-        all_posts = []
+        fetch = tool_fetch_posts(
+            session_id=session_id,
+            actor=source,
+            limit=max(5, int(cfg.get('max_posts_per_run') or 2) * 3),
+            include_reposts=bool(cfg.get('include_reposts')),
+            media_only=bool(cfg.get('media_only', True))
+        )
+        if not fetch.get('success'):
+            _save_auto_config({**cfg, 'last_error': fetch.get('error'), 'last_run_at': datetime.now()})
+            return fetch
+
+        posts = fetch.get('posts') or []
         new_posts = []
-        errors_per_source = {}
-        
-        # Fetch from EACH source
-        for source in sources:
-            fetch = tool_fetch_posts(
-                session_id=session_id,
-                actor=source,
-                limit=max(5, int(cfg.get('max_posts_per_run') or 2) * 2),
-                include_reposts=bool(cfg.get('include_reposts')),
-                media_only=bool(cfg.get('media_only', True))
-            )
-            if not fetch.get('success'):
-                errors_per_source[source] = fetch.get('error')
-                continue
-            
-            posts = fetch.get('posts') or []
-            all_posts.extend(posts)
-            print(f"📥 Fetched {len(posts)} posts from {source}")
-        
-        if not all_posts:
-            result_msg = f"No posts from any source in '{name}'"
-            _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
-            return {"success": True, "posted_count": 0, "message": result_msg}
-        
-        # Filter new posts (not seen before)
-        for p in all_posts:
+        for p in posts:
             uri = p.get('uri')
             if not uri or _auto_seen(uri, name):
                 continue
             new_posts.append(p)
             if len(new_posts) >= int(cfg.get('max_posts_per_run') or 2):
                 break
-        
+
         if not new_posts:
-            result_msg = f"No new posts from any source in '{name}'"
+            result_msg = f"No new posts from @{source}"
             _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
             return {"success": True, "posted_count": 0, "message": result_msg}
 
-        # Save to vault
-        tool_add_to_vault(new_posts, handler_handle=name)
+        # save to vault
+        tool_add_to_vault(new_posts, handler_handle=source)
 
         account_id = resolve_instagram_account_id(cfg.get('account_id'), cfg.get('account_username'))
         account_username = cfg.get('account_username')
         content_type = cfg.get('content_type') or 'feed'
-        
         if not account_id:
             msg = f"Bad Instagram account on pipeline {name}: {cfg.get('account_id')} / {account_username}"
             _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
             return {"success": False, "error": msg}
-        
         posted = 0
         errors = []
         for p in new_posts:
@@ -1368,7 +1326,7 @@ def run_auto_once(name='default'):
                 errors.append(r.get('error'))
             time.sleep(1.5)
 
-        result_msg = f"Auto: posted {posted}/{len(new_posts)} from {len(sources)} sources in '{name}'"
+        result_msg = f"Auto: posted {posted}/{len(new_posts)} from @{source}"
         _save_auto_config({
             **cfg,
             'last_error': '; '.join(errors) if errors else None,
@@ -1380,15 +1338,14 @@ def run_auto_once(name='default'):
             "success": True,
             "posted_count": posted,
             "fetched_new": len(new_posts),
-            "total_fetched": len(all_posts),
-            "sources": sources,
-            "errors": errors_per_source,
+            "errors": errors,
             "message": result_msg
         }
     except Exception as e:
         traceback.print_exc()
         _save_auto_config({**cfg, 'last_error': str(e), 'last_run_at': datetime.now()})
         return {"success": False, "error": str(e)}
+
 
 
     print("🤖 Auto pilot loop stopped")
@@ -1517,10 +1474,8 @@ def tool_auto_status(name: str = None) -> dict:
 
 def tool_auto_setup(
     source_handle: str = None,
-    source_handles: list = None,
     account_username: str = None,
     account_id: str = None,
-    niche: str = None,
     max_posts_per_run: int = 2,
     content_type: str = "feed",
     media_only: bool = True,
@@ -1531,44 +1486,34 @@ def tool_auto_setup(
     name: str = None
 ) -> dict:
     """
-    Configure an autonomous pipeline for a niche with multiple sources.
+    Configure an autonomous pipeline.
+    Use a unique `name` per source (e.g. name='coreiq', name='dailymotivator').
+    If name is omitted, uses the source_handle slug or 'default'.
     """
-    # Determine sources
-    if source_handles:
-        cleaned_handles = []
-        for h in source_handles:
-            h = h.lstrip('@').strip()
-            if '.' not in h and not h.endswith('.bsky.social'):
-                h = h + '.bsky.social'
-            cleaned_handles.append(h)
-        sources = cleaned_handles
-    elif source_handle:
+    if source_handle:
         source_handle = source_handle.lstrip('@')
         if '.' not in source_handle:
             source_handle = source_handle + '.bsky.social'
-        sources = [source_handle]
-    else:
-        return {"success": False, "error": "Provide source_handle or source_handles"}
-    
-    # Auto-name from niche or source
+    # auto-name from source so multiple sources don't overwrite each other
     if not name:
-        if niche:
-            name = niche.lower().replace(' ', '_')
+        if source_handle:
+            name = source_handle.split('.')[0].lower()
         else:
-            name = sources[0].split('.')[0].lower()
-    
+            name = 'default'
+
     cfg = _load_auto_config(name) or {'name': name}
     cfg['name'] = name
-    cfg['source_handles'] = sources
-    cfg['source_handle'] = sources[0]
-    if niche:
-        cfg['niche'] = niche
-    
-    # Set other fields
+    if source_handle:
+        cfg['source_handle'] = source_handle
     if account_username:
         cfg['account_username'] = account_username.lstrip('@').replace('ig_', '')
-    if account_id:
+    # Always resolve to a real Zernio mongo id
+    resolved = resolve_instagram_account_id(account_id, cfg.get('account_username') or account_username)
+    if resolved:
+        cfg['account_id'] = resolved
+    elif account_id and _looks_like_zernio_id(account_id):
         cfg['account_id'] = account_id
+
     if max_posts_per_run:
         cfg['max_posts_per_run'] = int(max_posts_per_run)
     if content_type:
@@ -1581,21 +1526,15 @@ def tool_auto_setup(
         cfg['bluesky_app_password'] = bluesky_app_password
     if enabled is not None:
         cfg['enabled'] = bool(enabled)
-    
     ok = _save_auto_config(cfg)
     if not ok:
         return {"success": False, "error": "Failed to save config"}
-    
     if cfg.get('enabled'):
         start_auto_pilot()
-        set_cron_state(True)
-    
-    source_count = len(cfg.get('source_handles', []))
-    
     return {
         "success": True,
         "config": {k: v for k, v in cfg.items() if k != 'bluesky_app_password'},
-        "message": f"✅ Pipeline '{name}' saved · {source_count} sources · enabled={cfg.get('enabled')} → {cfg.get('account_username') or cfg.get('account_id')}"
+        "message": f"Pipeline '{name}' saved · enabled={cfg.get('enabled')} · @{cfg.get('source_handle')} → {cfg.get('account_username') or cfg.get('account_id')}"
     }
 
 
@@ -4503,192 +4442,19 @@ def tool_list_scheduled(limit: int = 20) -> dict:
         return {"success": False, "error": str(e)}
 
 
-
-
-
-
-
-
-
-# ============================================================
-# NICHE SOURCE MANAGEMENT TOOLS
-# ============================================================
-
-def tool_add_source_to_niche(niche: str, source_handle: str) -> dict:
-    """Add a source to an existing niche pipeline."""
-    source = source_handle.lstrip('@').strip()
-    if '.' not in source and not source.endswith('.bsky.social'):
-        source = source + '.bsky.social'
-    
-    configs = _list_auto_configs()
-    cfg = None
-    for c in configs:
-        if c.get('niche', '').lower() == niche.lower() or c.get('name', '').lower() == niche.lower():
-            cfg = c
-            break
-    
-    if not cfg:
-        return {
-            "success": False,
-            "error": f"Pipeline '{niche}' not found",
-            "message": f"No pipeline found for niche '{niche}'. Use 'auto setup' first."
-        }
-    
-    sources = cfg.get('source_handles') or []
-    if source in sources:
-        return {
-            "success": False,
-            "error": f"Source '{source}' already exists in '{niche}'",
-            "message": f"⚠️ '{source}' is already in '{niche}' pipeline"
-        }
-    
-    sources.append(source)
-    cfg['source_handles'] = sources
-    ok = _save_auto_config(cfg)
-    if not ok:
-        return {"success": False, "error": "Failed to save config"}
-    
-    return {
-        "success": True,
-        "niche": niche,
-        "source_added": source,
-        "total_sources": len(sources),
-        "sources": sources,
-        "message": f"✅ Added '{source}' to '{niche}' pipeline ({len(sources)} total sources)"
-    }
-
-def tool_remove_source_from_niche(niche: str, source_handle: str) -> dict:
-    """Remove a source from a niche pipeline."""
-    source = source_handle.lstrip('@').strip()
-    if '.' not in source and not source.endswith('.bsky.social'):
-        source = source + '.bsky.social'
-    
-    configs = _list_auto_configs()
-    cfg = None
-    for c in configs:
-        if c.get('niche', '').lower() == niche.lower() or c.get('name', '').lower() == niche.lower():
-            cfg = c
-            break
-    
-    if not cfg:
-        return {"success": False, "error": f"Pipeline '{niche}' not found"}
-    
-    sources = cfg.get('source_handles') or []
-    if source not in sources:
-        return {"success": False, "error": f"Source '{source}' not found in '{niche}'"}
-    
-    sources.remove(source)
-    cfg['source_handles'] = sources
-    
-    if not sources:
-        cfg['enabled'] = False
-        warning = " ⚠️ No sources left! Pipeline disabled."
-    else:
-        warning = ""
-    
-    ok = _save_auto_config(cfg)
-    if not ok:
-        return {"success": False, "error": "Failed to save config"}
-    
-    return {
-        "success": True,
-        "niche": niche,
-        "source_removed": source,
-        "total_sources": len(sources),
-        "sources": sources,
-        "message": f"✅ Removed '{source}' from '{niche}' pipeline ({len(sources)} sources remain){warning}"
-    }
-
-def tool_list_niche_sources(niche: str) -> dict:
-    """List all sources in a niche."""
-    configs = _list_auto_configs()
-    cfg = None
-    for c in configs:
-        if c.get('niche', '').lower() == niche.lower() or c.get('name', '').lower() == niche.lower():
-            cfg = c
-            break
-    
-    if not cfg:
-        return {"success": False, "error": f"Pipeline '{niche}' not found"}
-    
-    sources = cfg.get('source_handles') or []
-    enabled = cfg.get('enabled', False)
-    
-    lines = [
-        f"📋 Sources in '{cfg.get('name')}' ({cfg.get('niche') or 'unnamed'})",
-        f"   Status: {'🟢 ENABLED' if enabled else '🔴 DISABLED'}",
-        f"   Destination: {cfg.get('account_username') or '?'}",
-        f"   Total: {len(sources)} source(s)"
-    ]
-    
-    for i, src in enumerate(sources, 1):
-        lines.append(f"   {i}. {src}")
-    
-    return {
-        "success": True,
-        "niche": cfg.get('niche') or cfg.get('name'),
-        "pipeline_name": cfg.get('name'),
-        "enabled": enabled,
-        "destination": cfg.get('account_username'),
-        "sources": sources,
-        "message": "\n".join(lines)
-    }
-
-def tool_list_all_niches() -> dict:
-    """List all niche pipelines with their sources."""
-    configs = _list_auto_configs()
-    niches = []
-    
-    for cfg in configs:
-        sources = cfg.get('source_handles') or []
-        niches.append({
-            "name": cfg.get('name'),
-            "niche": cfg.get('niche') or cfg.get('name'),
-            "enabled": cfg.get('enabled', False),
-            "source_count": len(sources),
-            "sources": sources,
-            "destination": cfg.get('account_username')
-        })
-    
-    if not niches:
-        return {
-            "success": True,
-            "niches": [],
-            "message": "No niches configured. Use 'auto setup' to create one."
-        }
-    
-    lines = ["📋 Your Niches:"]
-    for n in niches:
-        status = '🟢' if n['enabled'] else '🔴'
-        lines.append(f"  {status} {n['niche']} → {n['destination']} ({n['source_count']} sources)")
-        for src in n['sources'][:3]:
-            lines.append(f"      • {src}")
-        if len(n['sources']) > 3:
-            lines.append(f"      ...and {len(n['sources']) - 3} more")
-    
-    return {
-        "success": True,
-        "niches": niches,
-        "message": "\n".join(lines)
-    }
-
-
-
-
-
-
-
-
-# Find this section and add the new tools:
+# Map tool names → functions
+# Map tool names → functions
 TOOL_MAP = {
     "login": tool_login,
     "restore_session": tool_restore_session,
     "fetch_posts": tool_fetch_posts,
     "add_to_vault": tool_add_to_vault,
     "list_vault": tool_list_vault,
+    # ===== NEW VAULT MANAGEMENT TOOLS =====
     "list_vault_by_status": tool_list_vault_by_status,
     "delete_vault_items": tool_delete_vault_items,
     "post_unposted": tool_post_unposted,
+    # ===== END NEW VAULT MANAGEMENT TOOLS =====
     "remove_from_vault": tool_remove_from_vault,
     "get_status": tool_get_status,
     "list_accounts": tool_list_accounts,
@@ -4708,13 +4474,8 @@ TOOL_MAP = {
     "check_zernio_key": tool_check_zernio_key,
     "delete_account": tool_delete_account_permanently,
     "delete_all_accounts": tool_delete_all_accounts_permanently,
-    
-    # ===== ADD THESE 4 NEW TOOLS =====
-    "add_source_to_niche": tool_add_source_to_niche,
-    "remove_source_from_niche": tool_remove_source_from_niche,
-    "list_niche_sources": tool_list_niche_sources,
-    "list_all_niches": tool_list_all_niches,
 }
+
 
 
 
@@ -6540,6 +6301,12 @@ def format_tool_summary(tool_results):
 
 
 
+
+
+
+
+
+
 def simple_fallback(msg, session_id):
     """Keyword router so core actions work even when Gemini is offline."""
     lower = msg.lower().strip()
@@ -6626,7 +6393,7 @@ def simple_fallback(msg, session_id):
         return "Accounts:\n" + "\n".join(f"• @{a.get('label')} ({a.get('account_id')})" for a in accs)
 
     # ============================================================
-    # PIPELINE CONTROL COMMANDS
+    # PIPELINE CONTROL COMMANDS (NEW)
     # ============================================================
 
     # --- LIST PIPELINES ---
@@ -6889,47 +6656,8 @@ def simple_fallback(msg, session_id):
     if any(w in lower for w in ('start auto', 'auto start', 'go autonomous', 'work without me')):
         return str(tool_auto_start())
 
-    # ============================================================
-    # NICHE SOURCE MANAGEMENT CHAT COMMANDS (NEW)
-    # ============================================================
-
-    # --- ADD SOURCE TO NICHE ---
-    if 'add' in lower and any(w in lower for w in ('source', 'handler', 'handle')) and 'to' in lower:
-        source_match = re.search(r'add\s+([a-zA-Z0-9._-]+(?:\.[a-zA-Z0-9._-]+)?)\s+to\s+([a-zA-Z\s]+)', msg, re.I)
-        if source_match:
-            source = source_match.group(1)
-            niche = source_match.group(2).strip()
-            result = tool_add_source_to_niche(niche, source)
-            return result.get('message', str(result))
-        else:
-            return "Usage: add [source_handle] to [niche]\nExample: add quoteoftheday.bsky.social to motivational quotes"
-
-    # --- REMOVE SOURCE FROM NICHE ---
-    if 'remove' in lower and any(w in lower for w in ('source', 'handler', 'handle')) and 'from' in lower:
-        source_match = re.search(r'remove\s+([a-zA-Z0-9._-]+(?:\.[a-zA-Z0-9._-]+)?)\s+from\s+([a-zA-Z\s]+)', msg, re.I)
-        if source_match:
-            source = source_match.group(1)
-            niche = source_match.group(2).strip()
-            result = tool_remove_source_from_niche(niche, source)
-            return result.get('message', str(result))
-        else:
-            return "Usage: remove [source_handle] from [niche]\nExample: remove astrobin.com from explore"
-
-    # --- LIST SOURCES IN NICHE ---
-    if any(w in lower for w in ('list', 'show')) and any(w in lower for w in ('sources', 'handles', 'handlers')) and 'in' in lower:
-        niche_match = re.search(r'(?:list|show)\s+(?:sources|handlers?)\s+in\s+([a-zA-Z\s]+)', msg, re.I)
-        if niche_match:
-            niche = niche_match.group(1).strip()
-            result = tool_list_niche_sources(niche)
-            return result.get('message', str(result))
-
-    # --- LIST ALL NICHES ---
-    if any(w in lower for w in ('list niches', 'show niches', 'niches', 'all niches')):
-        result = tool_list_all_niches()
-        return result.get('message', str(result))
-
     return (
-        "I can: login, fetch, save to vault, post now, schedule, auto pilot, status, and manage niches.\n"
+        "I can: login, fetch, save to vault, post now, schedule, auto pilot, status.\n"
         "Examples:\n"
         "  Login with handle and app-password\n"
         "  Post id 2 to easternfrontdaily\n"
@@ -6940,12 +6668,9 @@ def simple_fallback(msg, session_id):
         "  list pipelines\n"
         "  auto run now\n"
         "  Auto setup name=zorrito source_handle=zorrito.bsky.social account_username=serpent_sniper1 enabled=true\n"
-        "  Remove pipeline scorpio\n"
-        "  add quoteoftheday.bsky.social to motivational quotes\n"
-        "  remove astrobin.com from explore\n"
-        "  list sources in motivational quotes\n"
-        "  list niches"
+        "  Remove pipeline scorpio"
     )
+
 # ============================================================
 # IMAGE UPLOAD → POST / SCHEDULE / VAULT (UI endpoints)
 # ============================================================
