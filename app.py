@@ -6948,58 +6948,7 @@ def api_health():
 
 
 
-# ============================================================
-# CRON CONTROL ENDPOINTS
-# ============================================================
 
-@app.route('/api/cron/start', methods=['POST'])
-def api_cron_start():
-    """Enable the cron job."""
-    set_cron_state(True)
-    return jsonify({
-        "success": True,
-        "message": "✅ Cron enabled. Will process on next trigger.",
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/api/cron/stop', methods=['POST'])
-def api_cron_stop():
-    """Disable the cron job."""
-    set_cron_state(False)
-    return jsonify({
-        "success": True,
-        "message": "⏸️ Cron paused. Will skip processing until started again.",
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/api/cron/status', methods=['GET'])
-def api_cron_status():
-    """Get full cron status with pipelines."""
-    cron_enabled = get_cron_state()
-    
-    # Get pipeline status
-    configs = _list_auto_configs()
-    enabled_pipelines = [c for c in configs if c.get('enabled')]
-    
-    return jsonify({
-        "success": True,
-        "cron_enabled": cron_enabled,
-        "cron_status": "RUNNING" if cron_enabled else "PAUSED",
-        "pipelines_total": len(configs),
-        "pipelines_enabled": len(enabled_pipelines),
-        "pipelines": [
-            {
-                "name": c.get('name'),
-                "enabled": c.get('enabled', False),
-                "source": c.get('source_handle'),
-                "destination": c.get('account_username'),
-                "last_result": c.get('last_result'),
-                "last_error": c.get('last_error')
-            }
-            for c in configs
-        ],
-        "timestamp": datetime.now().isoformat()
-    })
 
 # Vercel serverless compatibility - ADD THIS AT THE VERY BOTTOM OF THE FILE
 # This allows Vercel to import the app as a module
