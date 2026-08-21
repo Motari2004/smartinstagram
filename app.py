@@ -1403,12 +1403,18 @@ def stop_auto_pilot():
 
 
 def tool_auto_status(name: str = None) -> dict:
-    """Status for one pipeline or all pipelines (includes .env Zernio key check)."""
+    """Status for one pipeline or all pipelines.
+    Shows cron state instead of Vercel thread state for accuracy.
+    """
     key_status = ensure_zernio_keys_loaded(for_auto=True)
-    running = _auto_thread is not None and _auto_thread.is_alive()
+    
+    # Get CRON state (persistent in database)
+    cron_enabled = get_cron_state()
+    
     configs = _list_auto_configs()
     if name:
         configs = [c for c in configs if c.get('name') == name]
+    
     pipelines = []
     for cfg in configs:
         pipelines.append({
@@ -1423,35 +1429,50 @@ def tool_auto_status(name: str = None) -> dict:
             "last_result": cfg.get('last_result'),
             "last_error": cfg.get('last_error'),
         })
+    
     any_enabled = any(p['enabled'] for p in pipelines)
+    
+    # Determine overall status based on cron state, not thread state
+    if cron_enabled and any_enabled:
+        overall_status = "🟢 RUNNING (cron active)"
+    elif cron_enabled and not any_enabled:
+        overall_status = "🟡 CRON ON but no pipelines enabled"
+    elif not cron_enabled and any_enabled:
+        overall_status = "🟡 Pipelines enabled but CRON PAUSED"
+    else:
+        overall_status = "🔴 STOPPED (cron paused, no pipelines)"
+    
     key_line = f"Zernio keys (.env): {key_status.get('count', 0)} loaded"
     if not key_status.get('success'):
         key_line = "Zernio keys (.env): ⚠️ NONE — posting will fail"
+    
     lines = [
-        f"Auto engine: {'RUNNING' if running else 'STOPPED'} · {len(pipelines)} pipeline(s)",
+        f"🤖 Auto engine: {overall_status} · {len(pipelines)} pipeline(s)",
+        f"   Cron state: {'🟢 ENABLED' if cron_enabled else '🔴 DISABLED'}",
         key_line,
     ]
+    
     for p in pipelines:
-        state = 'ON' if p['enabled'] else 'OFF'
+        state = '🟢 ON' if p['enabled'] else '🔴 OFF'
         lines.append(
             f"• [{p['name']}] {state} · @{p.get('source_handle') or '?'} → {p.get('account_username') or '?'} · "
             f"every {p.get('poll_interval_sec') or 300}s · last: {p.get('last_result') or 'never'}"
         )
+    
+    # Add helpful note about Vercel
+    lines.append("\n💡 Note: Status shows CRON state (persistent), not Vercel thread state.")
+    lines.append("   Your pipelines run via cron-job.org every 5 minutes.")
+    
     return {
         "success": True,
-        "running": running,
+        "running": cron_enabled and any_enabled,
+        "cron_enabled": cron_enabled,
         "enabled": any_enabled,
         "pipeline_count": len(pipelines),
         "pipelines": pipelines,
         "zernio_keys_count": key_status.get('count', 0),
         "zernio_keys_ok": bool(key_status.get('success')),
-        "source_handle": (next((p['source_handle'] for p in pipelines if p['enabled']), None)
-                          or (pipelines[0]['source_handle'] if pipelines else None)),
-        "account_username": (next((p['account_username'] for p in pipelines if p['enabled']), None)
-                             or (pipelines[0]['account_username'] if pipelines else None)),
-        "poll_interval_sec": (next((p['poll_interval_sec'] for p in pipelines if p['enabled']), None)
-                              or (pipelines[0]['poll_interval_sec'] if pipelines else None)),
-        "message": "\n".join(lines) if pipelines else f"No automations configured yet.\n{key_line}"
+        "message": "\n".join(lines)
     }
 
 
@@ -6297,8 +6318,6 @@ def format_tool_summary(tool_results):
 
 
 
-
-
 def simple_fallback(msg, session_id):
     """Keyword router so core actions work even when Gemini is offline."""
     lower = msg.lower().strip()
@@ -6384,9 +6403,108 @@ def simple_fallback(msg, session_id):
             return "No connected Instagram accounts."
         return "Accounts:\n" + "\n".join(f"• @{a.get('label')} ({a.get('account_id')})" for a in accs)
 
+    # ============================================================
+    # PIPELINE CONTROL COMMANDS (NEW)
+    # ============================================================
 
+    # --- LIST PIPELINES ---
+    if any(w in lower for w in ('list pipelines', 'show pipelines', 'pipelines')):
+        configs = _list_auto_configs()
+        if not configs:
+            return "No pipelines configured."
+        
+        lines = ["📋 Your pipelines:"]
+        for c in configs:
+            status = "🟢 RUNNING" if c.get('enabled') else "🔴 STOPPED"
+            name = c.get('name')
+            source = c.get('source_handle')
+            dest = c.get('account_username')
+            last = c.get('last_result') or 'never'
+            lines.append(f"  • {name}: {status} · @{source} → @{dest} · last: {last}")
+        
+        return "\n".join(lines)
 
+    # --- STATUS WITH CRON INFO (UPDATED auto status) ---
+    if any(w in lower for w in ('auto status', 'pipeline status', 'show status', 'status all')):
+        result = tool_auto_status()
+        return result.get('message', str(result))
 
+    # --- CRON STATUS ---
+    if any(w in lower for w in ('cron status', 'cron info', 'is cron running')):
+        try:
+            cron_enabled = get_cron_state()
+            status = "🟢 ENABLED" if cron_enabled else "🔴 DISABLED"
+            configs = _list_auto_configs()
+            enabled = [c for c in configs if c.get('enabled')]
+            
+            response = f"📊 Cron State: {status}\n"
+            response += f"   Pipelines: {len(enabled)} enabled out of {len(configs)}\n"
+            if enabled:
+                names = [c.get('name') for c in enabled]
+                sources = [f"@{c.get('source_handle')}" for c in enabled]
+                response += f"   Active: {', '.join(names)} ({', '.join(sources)})"
+            else:
+                response += "   No pipelines enabled"
+            return response
+        except Exception as e:
+            return f"❌ Error checking cron status: {e}"
+
+    # --- START PIPELINE ---
+    if any(w in lower for w in ('start pipeline', 'enable pipeline', 'turn on pipeline', 'activate pipeline')):
+        name_match = re.search(r'(?:pipeline\s+)?([a-zA-Z0-9._-]+)', msg)
+        name = name_match.group(1) if name_match else None
+        
+        if name:
+            configs = _list_auto_configs()
+            found = [c for c in configs if c.get('name') == name]
+            if not found:
+                existing = [c.get('name') for c in configs]
+                return f"❌ Pipeline '{name}' not found. Existing: {', '.join(existing) or 'none'}"
+            
+            result = tool_auto_start(name=name)
+            return result.get('message', f"Pipeline '{name}' started")
+        else:
+            configs = _list_auto_configs()
+            if not configs:
+                return "No pipelines configured. Use 'auto setup' first."
+            names = [c.get('name') for c in configs if c.get('name')]
+            return f"Which pipeline? Available: {', '.join(names)}\nSay 'start pipeline <name>'"
+
+    # --- STOP PIPELINE ---
+    if any(w in lower for w in ('stop pipeline', 'disable pipeline', 'turn off pipeline', 'deactivate pipeline')):
+        name_match = re.search(r'(?:pipeline\s+)?([a-zA-Z0-9._-]+)', msg)
+        name = name_match.group(1) if name_match else None
+        
+        if name:
+            configs = _list_auto_configs()
+            found = [c for c in configs if c.get('name') == name]
+            if not found:
+                existing = [c.get('name') for c in configs]
+                return f"❌ Pipeline '{name}' not found. Existing: {', '.join(existing) or 'none'}"
+            
+            result = tool_auto_stop(name=name)
+            return result.get('message', f"Pipeline '{name}' stopped")
+        else:
+            configs = _list_auto_configs()
+            if not configs:
+                return "No pipelines configured."
+            enabled = [c.get('name') for c in configs if c.get('enabled')]
+            if not enabled:
+                return "No pipelines are currently running."
+            return f"Which pipeline? Running: {', '.join(enabled)}\nSay 'stop pipeline <name>'"
+
+    # --- RUN PIPELINE ONCE ---
+    if any(w in lower for w in ('run pipeline', 'run auto', 'auto run now')):
+        name_match = re.search(r'(?:pipeline\s+)?([a-zA-Z0-9._-]+)', msg)
+        name = name_match.group(1) if name_match else None
+        
+        if name:
+            resolved = _resolve_pipeline_name(name)
+            result = tool_auto_run_now(name=resolved if resolved else name)
+        else:
+            result = tool_auto_run_now()
+        
+        return result.get('message', str(result))
 
     # --- FETCH (basic) ---
     if 'fetch' in lower:
@@ -6461,16 +6579,6 @@ def simple_fallback(msg, session_id):
             sessions[session_id]['_last_fetched'] = posts
             sessions[session_id]['_last_actor'] = actor
         return "\n".join(lines)
-
-
-
-
-
-
-
-
-
-
 
     # --- SAVE TO VAULT ---
     if any(w in lower for w in ('save', 'add to vault', 'vault them')):
@@ -6553,23 +6661,24 @@ def simple_fallback(msg, session_id):
             return tool_auto_remove(m.group(1)).get('message') or str(tool_auto_remove(m.group(1)))
         return "Say: Remove pipeline <name>  e.g. Remove pipeline scorpio"
 
-    # --- AUTO ---
-    if any(w in lower for w in ('auto status', 'autopilot', 'auto pilot')):
-        return tool_auto_status().get('message', str(tool_auto_status()))
+    # --- LEGACY AUTO COMMANDS (kept for backward compatibility) ---
     if any(w in lower for w in ('stop auto', 'auto stop', 'disable auto')):
         return tool_auto_stop().get('message')
     if any(w in lower for w in ('start auto', 'auto start', 'go autonomous', 'work without me')):
         return str(tool_auto_start())
-    if 'auto run' in lower or 'run auto' in lower:
-        return str(tool_auto_run_now())
 
     return (
-        "I can: login, fetch, save to vault, post now (by id), schedule, auto pilot, status.\n"
+        "I can: login, fetch, save to vault, post now, schedule, auto pilot, status.\n"
         "Examples:\n"
         "  Login with handle and app-password\n"
         "  Post id 2 to easternfrontdaily\n"
-        "  Auto setup watch zorrito post to easternfrontdaily every 5 minutes\n"
-        "  Start auto / Stop auto / Auto status\n"
+        "  start pipeline zorrito\n"
+        "  stop pipeline zorrito\n"
+        "  auto status\n"
+        "  cron status\n"
+        "  list pipelines\n"
+        "  auto run now\n"
+        "  Auto setup name=zorrito source_handle=zorrito.bsky.social account_username=serpent_sniper1 enabled=true\n"
         "  Remove pipeline scorpio"
     )
 
