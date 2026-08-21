@@ -4509,10 +4509,6 @@ TOOL_MAP = {
 
 
 
-
-
-
-
 # OpenAI-compatible tool schemas (works with Gemini OpenAI endpoint)
 TOOLS_SCHEMA = [
     {
@@ -4762,6 +4758,7 @@ TOOLS_SCHEMA = [
             "parameters": {"type": "object", "properties": {}}
         }
     },
+    # ===== UPDATED: auto_setup WITHOUT poll_interval_sec =====
     {
         "type": "function",
         "function": {
@@ -4774,7 +4771,6 @@ TOOLS_SCHEMA = [
                     "source_handle": {"type": "string", "description": "Bluesky handle to watch e.g. coreiq.bsky.social"},
                     "account_username": {"type": "string", "description": "Instagram username e.g. easternfrontdaily"},
                     "account_id": {"type": "string"},
-                    "poll_interval_sec": {"type": "integer", "default": 300},
                     "max_posts_per_run": {"type": "integer", "default": 2},
                     "content_type": {"type": "string", "enum": ["feed", "story"], "default": "feed"},
                     "media_only": {"type": "boolean", "default": True},
