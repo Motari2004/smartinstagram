@@ -5317,7 +5317,6 @@ def execute_tool(name, arguments, session_id=None):
                 source_handle=arguments.get('source_handle'),
                 account_username=arguments.get('account_username'),
                 account_id=arguments.get('account_id'),
-                poll_interval_sec=arguments.get('poll_interval_sec', 300),
                 max_posts_per_run=arguments.get('max_posts_per_run', 2),
                 content_type=arguments.get('content_type', 'feed'),
                 media_only=bool(arguments.get('media_only', True)),
