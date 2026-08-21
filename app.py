@@ -6851,19 +6851,17 @@ def api_delete_all_accounts():
 
 
 
-
-@app.route('/api/cron/auto-run', methods=['GET'])
-def cron_auto_run():
+@app.route('/api/auto/run-now', methods=['GET'])
+def api_auto_run_now():
     """
-    Vercel cron endpoint - runs auto pilot on a schedule.
-    Called automatically by Vercel's cron job system.
+    External cron trigger endpoint for cron-job.org.
+    This runs all enabled auto pipelines.
     """
     try:
         # Run ALL enabled pipelines once
         result = tool_auto_run_now()
         
-        # Log what happened
-        print(f"🔄 Cron auto-run: {result.get('message', 'done')}")
+        print(f"🔄 Cron triggered: {result.get('message', 'done')}")
         
         return jsonify({
             "success": True,
@@ -6871,7 +6869,7 @@ def cron_auto_run():
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
-        print(f"❌ Cron auto-run error: {e}")
+        print(f"❌ Cron error: {e}")
         traceback.print_exc()
         return jsonify({
             "success": False,
@@ -6880,8 +6878,14 @@ def cron_auto_run():
         }), 500
 
 
-
-
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    """Health check endpoint for uptime monitoring."""
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "pipelines_enabled": len([c for c in _list_auto_configs() if c.get('enabled')])
+    })
 
 
 
