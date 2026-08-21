@@ -772,8 +772,6 @@ def get_db_connection():
 
 
 
-
-
 def init_db():
     conn = get_db_connection()
     if not conn:
@@ -928,6 +926,7 @@ def init_db():
             )
         ''')
 
+        # ===== UPDATED: auto_config WITHOUT poll_interval_sec =====
         cur.execute('''
             CREATE TABLE IF NOT EXISTS auto_config (
                 id SERIAL PRIMARY KEY,
@@ -937,7 +936,6 @@ def init_db():
                 account_id TEXT,
                 account_username TEXT,
                 content_type TEXT DEFAULT 'feed',
-                poll_interval_sec INTEGER DEFAULT 300,
                 media_only BOOLEAN DEFAULT TRUE,
                 include_reposts BOOLEAN DEFAULT FALSE,
                 max_posts_per_run INTEGER DEFAULT 2,
@@ -987,14 +985,23 @@ def init_db():
             )
         ''')
 
+        # ===== ADDED: app_settings table for cron control =====
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id SERIAL PRIMARY KEY,
+                key TEXT UNIQUE NOT NULL,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Database initialized with multi-platform support")
+        print("✅ Database initialized with multi-platform support (poll_interval_sec removed)")
     except Exception as e:
         print(f"❌ DB init error: {e}")
         traceback.print_exc()
-
 
 
 
@@ -1051,12 +1058,6 @@ def set_cron_state(enabled: bool):
         print(f"✅ Cron state set to: {'ENABLED' if enabled else 'DISABLED'}")
     except Exception as e:
         print(f"Error saving cron state: {e}")
-# ============================================================
-# AUTO PILOT (background autonomy)
-# ============================================================
-
-_auto_thread = None
-_auto_stop = threading.Event()
 
 
 def _load_auto_config(name='default'):
@@ -1346,33 +1347,24 @@ def run_auto_once(name='default'):
         return {"success": False, "error": str(e)}
 
 
-def _auto_loop():
-    print("🤖 Auto pilot loop started")
-    while not _auto_stop.is_set():
-        try:
-            configs = [c for c in _list_auto_configs() if c.get('enabled')]
-            if configs:
-                intervals = []
-                for cfg in configs:
-                    name = cfg.get('name') or 'default'
-                    print(f"🤖 Running pipeline: {name} (@{cfg.get('source_handle')})")
-                    run_auto_once(name)
-                    intervals.append(max(60, int(cfg.get('poll_interval_sec') or 300)))
-                    if _auto_stop.is_set():
-                        break
-                interval = min(intervals) if intervals else 60
-            else:
-                interval = 30  # check often whether any got enabled
-        except Exception as e:
-            print(f"auto loop error: {e}")
-            interval = 60
-        _auto_stop.wait(interval)
+
     print("🤖 Auto pilot loop stopped")
 
 
+
+
+
+
+
+
+
+
 def start_auto_pilot():
-    global _auto_thread
-    # Re-read Zernio keys from .env before starting autonomous posting
+    """
+    Simplified: just enable cron (no background thread needed).
+    Vercel kills background threads, so we rely on cron-job.org.
+    """
+    # Re-read Zernio keys from .env before enabling
     key_status = ensure_zernio_keys_loaded(for_auto=True)
     if not key_status.get('success'):
         return {
@@ -1381,25 +1373,30 @@ def start_auto_pilot():
             "message": key_status.get('message'),
             "keys_checked": True,
         }
-    if _auto_thread and _auto_thread.is_alive():
-        return {
-            "success": True,
-            "message": f"Auto pilot already running · {key_status.get('count', 0)} Zernio key(s) from .env",
-            "keys": key_status.get('keys_preview'),
-        }
-    _auto_stop.clear()
-    _auto_thread = threading.Thread(target=_auto_loop, daemon=True)
-    _auto_thread.start()
+    
+    # Just enable cron state in database
+    set_cron_state(True)
+    
     return {
         "success": True,
-        "message": f"Auto pilot started · {key_status.get('count', 0)} Zernio key(s) loaded from .env",
+        "message": f"✅ Cron enabled · {key_status.get('count', 0)} Zernio key(s) loaded from .env",
         "keys": key_status.get('keys_preview'),
+        "note": "⚠️ Background threads are not used on Vercel. cron-job.org handles scheduling."
     }
 
 
 def stop_auto_pilot():
-    _auto_stop.set()
-    return {"success": True, "message": "Auto pilot stop requested"}
+    """
+    Simplified: just disable cron.
+    """
+    set_cron_state(False)
+    return {"success": True, "message": "⏸️ Cron disabled. Pipeline will not run until enabled."}
+
+
+
+
+
+
 
 
 def tool_auto_status(name: str = None) -> dict:
@@ -1422,7 +1419,6 @@ def tool_auto_status(name: str = None) -> dict:
             "enabled": bool(cfg.get('enabled')),
             "source_handle": cfg.get('source_handle'),
             "account_username": cfg.get('account_username') or cfg.get('account_id'),
-            "poll_interval_sec": cfg.get('poll_interval_sec'),
             "max_posts_per_run": cfg.get('max_posts_per_run'),
             "content_type": cfg.get('content_type'),
             "last_run_at": str(cfg.get('last_run_at')) if cfg.get('last_run_at') else None,
@@ -1456,7 +1452,7 @@ def tool_auto_status(name: str = None) -> dict:
         state = '🟢 ON' if p['enabled'] else '🔴 OFF'
         lines.append(
             f"• [{p['name']}] {state} · @{p.get('source_handle') or '?'} → {p.get('account_username') or '?'} · "
-            f"every {p.get('poll_interval_sec') or 300}s · last: {p.get('last_result') or 'never'}"
+            f"last: {p.get('last_result') or 'never'}"
         )
     
     # Add helpful note about Vercel
@@ -1480,7 +1476,6 @@ def tool_auto_setup(
     source_handle: str = None,
     account_username: str = None,
     account_id: str = None,
-    poll_interval_sec: int = 300,
     max_posts_per_run: int = 2,
     content_type: str = "feed",
     media_only: bool = True,
@@ -1518,8 +1513,7 @@ def tool_auto_setup(
         cfg['account_id'] = resolved
     elif account_id and _looks_like_zernio_id(account_id):
         cfg['account_id'] = account_id
-    if poll_interval_sec:
-        cfg['poll_interval_sec'] = int(poll_interval_sec)
+
     if max_posts_per_run:
         cfg['max_posts_per_run'] = int(max_posts_per_run)
     if content_type:
