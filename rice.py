@@ -1429,12 +1429,16 @@ def tool_auto_setup(
     enabled: bool = None,
     name: str = None
 ) -> dict:
-    """Configure an autonomous pipeline."""
+    """
+    Configure an autonomous pipeline.
+    Use a unique `name` per source (e.g. name='coreiq', name='dailymotivator').
+    If name is omitted, uses the source_handle slug or 'default'.
+    """
     if source_handle:
         source_handle = source_handle.lstrip('@')
         if '.' not in source_handle:
             source_handle = source_handle + '.bsky.social'
-    
+    # auto-name from source so multiple sources don't overwrite each other
     if not name:
         if source_handle:
             name = source_handle.split('.')[0].lower()
@@ -1447,13 +1451,12 @@ def tool_auto_setup(
         cfg['source_handle'] = source_handle
     if account_username:
         cfg['account_username'] = account_username.lstrip('@').replace('ig_', '')
-    
+    # Always resolve to a real Zernio mongo id
     resolved = resolve_instagram_account_id(account_id, cfg.get('account_username') or account_username)
     if resolved:
         cfg['account_id'] = resolved
     elif account_id and _looks_like_zernio_id(account_id):
         cfg['account_id'] = account_id
-    
     if poll_interval_sec:
         cfg['poll_interval_sec'] = int(poll_interval_sec)
     if max_posts_per_run:
@@ -1468,24 +1471,16 @@ def tool_auto_setup(
         cfg['bluesky_app_password'] = bluesky_app_password
     if enabled is not None:
         cfg['enabled'] = bool(enabled)
-    
     ok = _save_auto_config(cfg)
     if not ok:
         return {"success": False, "error": "Failed to save config"}
-    
-    # If enabled, start the pipeline AND cron
     if cfg.get('enabled'):
         start_auto_pilot()
-        set_cron_state(True)
-        message = f"✅ Pipeline '{name}' created and started. Cron is RUNNING."
-    else:
-        message = f"✅ Pipeline '{name}' created (disabled). Use 'start pipeline {name}' to enable."
-    
     return {
         "success": True,
         "config": {k: v for k, v in cfg.items() if k != 'bluesky_app_password'},
-        "message": message
-    }a
+        "message": f"Pipeline '{name}' saved · enabled={cfg.get('enabled')} · @{cfg.get('source_handle')} → {cfg.get('account_username') or cfg.get('account_id')}"
+    }
 
 
 def _resolve_pipeline_name(query: str):
@@ -1517,7 +1512,7 @@ def _resolve_pipeline_name(query: str):
 
 
 def tool_auto_start(name: str = None) -> dict:
-    """Enable all pipelines (or one by name/handle) and start the engine + cron."""
+    """Enable all pipelines (or one by name/handle) and start the engine."""
     configs = _list_auto_configs()
     if name:
         resolved = _resolve_pipeline_name(name)
@@ -1539,23 +1534,17 @@ def tool_auto_start(name: str = None) -> dict:
         _save_auto_config(cfg)
         once = run_auto_once(cfg.get('name') or 'default')
         results.append({"name": cfg.get('name'), "run": once})
-    
-    # START THE AUTO PILOT (background loop)
     start_auto_pilot()
-    
-    # ALSO START THE CRON (so cron-job.org triggers work)
-    set_cron_state(True)
-    
     names = ', '.join(c.get('name') or '?' for c in configs)
     return {
         "success": True,
-        "message": f"✅ Pipeline(s) '{names}' started. Cron is now RUNNING.",
+        "message": f"Auto ON for: {names}",
         "runs": results
     }
 
 
 def tool_auto_stop(name: str = None) -> dict:
-    """Disable all pipelines (or one by name/handle). Stops engine + cron if none remain enabled."""
+    """Disable all pipelines (or one by name/handle). Stops engine if none remain enabled."""
     configs = _list_auto_configs()
     if name:
         resolved = _resolve_pipeline_name(name)
@@ -1570,31 +1559,19 @@ def tool_auto_stop(name: str = None) -> dict:
         configs = [c for c in configs if c.get('name') == resolved]
     if not configs and name:
         return {"success": False, "error": f"Pipeline '{name}' not found"}
-    
     stopped_names = []
     for cfg in configs:
         cfg['enabled'] = False
         _save_auto_config(cfg)
         stopped_names.append(cfg.get('name'))
-    
-    # Check if any pipelines remain enabled
     still_on = [c for c in _list_auto_configs() if c.get('enabled')]
-    
     if not still_on:
-        # No pipelines enabled - stop everything
         stop_auto_pilot()
-        set_cron_state(False)
-        return {
-            "success": True, 
-            "message": f"⏸️ Pipeline(s) '{', '.join(stopped_names)}' stopped. No pipelines enabled — cron stopped."
-        }
-    else:
-        # Some pipelines still running - keep cron running
-        still_names = [c.get('name') for c in still_on]
-        return {
-            "success": True,
-            "message": f"⏸️ Stopped '{', '.join(stopped_names)}'. Still running: {', '.join(still_names)}"
-        }
+        return {"success": True, "message": f"Stopped {', '.join(stopped_names)}. All automations stopped."}
+    return {
+        "success": True,
+        "message": f"Stopped {', '.join(stopped_names)}. {len(still_on)} still running."
+    }
 
 
 def tool_auto_run_now(name: str = None) -> dict:
