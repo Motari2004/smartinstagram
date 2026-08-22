@@ -3141,52 +3141,23 @@ def tool_restore_session(handle: str) -> dict:
 
 
 def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_reposts: bool = False, media_only: bool = True) -> dict:
-    """Fetch recent posts from a Bluesky handle. Only returns posts with images."""
+    """Fetch recent posts from a Bluesky handle."""
     if not session_id or session_id not in sessions:
         return {"success": False, "error": "Not logged in. Please login first."}
     try:
         client = sessions[session_id]['client']
-        result = client.get_author_feed(actor=actor, limit=min(limit * 3, 100))
+        result = client.get_author_feed(actor=actor, limit=min(limit * 2, 100))
         posts = []
-        skipped_videos = 0
-        
         for item in result.feed:
             post = item.post
-            
-            # Skip replies
             if is_reply(post):
                 continue
-            
-            # Skip reposts if not included
             if is_repost(post) and not include_reposts:
                 continue
-            
-            # Check embed type
-            embed = getattr(post, 'embed', None)
-            
-            # Skip posts with no embed
-            if not embed:
+            images = extract_images_from_embed(getattr(post, 'embed', None))
+            video = extract_video_from_embed(getattr(post, 'embed', None))
+            if media_only and not images and not video:
                 continue
-            
-            # ===== SKIP VIDEO POSTS =====
-            try:
-                embed_type = getattr(embed, 'py_type', '') or getattr(embed, '$type', '')
-                if 'video' in embed_type.lower():
-                    skipped_videos += 1
-                    continue
-            except Exception:
-                # If we can't read the embed, skip it
-                skipped_videos += 1
-                continue
-            
-            # Extract images
-            images = extract_images_from_embed(embed)
-            
-            # Skip if no images found
-            if not images:
-                continue
-            
-            # Only keep posts with images
             posts.append({
                 "uri": post.uri,
                 "author": post.author.handle,
@@ -3197,38 +3168,24 @@ def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_repos
                 "replies": getattr(post, 'reply_count', 0) or 0,
                 "created_at": getattr(post.record, 'created_at', ''),
                 "images": images,
-                "video": None,
-                "has_media": bool(images)
+                "video": video,
+                "has_media": bool(images or video)
             })
-            
             if len(posts) >= limit:
                 break
 
-        # Cache for later "save them to vault"
+        # Cache for a later "save them to vault" without re-passing full posts
         if session_id in sessions:
             sessions[session_id]['_last_fetched'] = posts
             sessions[session_id]['_last_actor'] = actor
-
-        message = f"Fetched {len(posts)} image posts from @{actor}"
-        if skipped_videos > 0:
-            message += f" (skipped {skipped_videos} video post(s))"
-        message += ". Say 'save them to the vault' to store them."
 
         return {
             "success": True,
             "count": len(posts),
             "posts": posts,
-            "skipped_videos": skipped_videos,
-            "message": message
+            "message": f"Fetched {len(posts)} posts from @{actor}. Say 'save them to the vault' to store them."
         }
     except Exception as e:
-        error_msg = str(e)
-        if "video" in error_msg.lower() or "embed" in error_msg.lower():
-            return {
-                "success": False, 
-                "error": "Some posts contain video (unsupported). Try a different source or use media_only=True.",
-                "details": error_msg
-            }
         return {"success": False, "error": str(e)}
 
 
