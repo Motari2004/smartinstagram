@@ -3144,12 +3144,29 @@ def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_repos
         return {"success": False, "error": "Not logged in. Please login first."}
     try:
         client = sessions[session_id]['client']
-        result = client.get_author_feed(actor=actor, limit=min(limit * 3, 100))
+        
+        # ===== FETCH FEED =====
+        try:
+            result = client.get_author_feed(actor=actor, limit=min(limit * 3, 100))
+        except Exception as feed_error:
+            error_msg = str(feed_error)
+            if "video" in error_msg.lower() or "embed" in error_msg.lower():
+                return {
+                    "success": False,
+                    "error": f"⚠️ '{actor}' has video posts which are not supported.",
+                    "suggestion": "Try: fetch posts from motivationagency.bsky.social or quoteoftheday.bsky.social",
+                    "details": error_msg
+                }
+            return {"success": False, "error": f"Failed to fetch feed: {error_msg}"}
+        
         posts = []
         skipped_videos = 0
+        skipped_no_image = 0
+        total_posts_scanned = 0
         
         for item in result.feed:
             post = item.post
+            total_posts_scanned += 1
             
             # Skip replies
             if is_reply(post):
@@ -3159,45 +3176,66 @@ def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_repos
             if is_repost(post) and not include_reposts:
                 continue
             
-            # Check embed type
-            embed = getattr(post, 'embed', None)
+            # ===== SAFELY CHECK FOR IMAGES =====
+            embed = None
+            try:
+                embed = getattr(post, 'embed', None)
+            except Exception:
+                skipped_no_image += 1
+                continue
             
             # Skip posts with no embed
             if not embed:
+                skipped_no_image += 1
                 continue
             
-            # ===== SKIP VIDEO POSTS =====
+            # ===== CHECK FOR VIDEO (without parsing) =====
+            is_video = False
             try:
-                embed_type = getattr(embed, 'py_type', '') or getattr(embed, '$type', '')
-                if 'video' in embed_type.lower():
+                embed_str = str(embed)
+                if 'video' in embed_str.lower() or 'embed.video' in embed_str.lower():
+                    is_video = True
                     skipped_videos += 1
                     continue
             except Exception:
-                # If we can't read the embed, skip it
+                pass
+            
+            # Skip videos
+            if is_video:
                 skipped_videos += 1
                 continue
             
-            # Extract images
-            images = extract_images_from_embed(embed)
+            # ===== EXTRACT IMAGES =====
+            images = []
+            try:
+                images = extract_images_from_embed(embed)
+            except Exception:
+                skipped_no_image += 1
+                continue
             
             # Skip if no images found
             if not images:
+                skipped_no_image += 1
                 continue
             
-            # Only keep posts with images
-            posts.append({
-                "uri": post.uri,
-                "author": post.author.handle,
-                "display_name": post.author.display_name or post.author.handle,
-                "text": getattr(post.record, 'text', '') or '',
-                "likes": getattr(post, 'like_count', 0) or 0,
-                "reposts": getattr(post, 'repost_count', 0) or 0,
-                "replies": getattr(post, 'reply_count', 0) or 0,
-                "created_at": getattr(post.record, 'created_at', ''),
-                "images": images,
-                "video": None,
-                "has_media": bool(images)
-            })
+            # ===== ADD POST (only image posts) =====
+            try:
+                posts.append({
+                    "uri": post.uri,
+                    "author": post.author.handle,
+                    "display_name": post.author.display_name or post.author.handle,
+                    "text": getattr(post.record, 'text', '') or '',
+                    "likes": getattr(post, 'like_count', 0) or 0,
+                    "reposts": getattr(post, 'repost_count', 0) or 0,
+                    "replies": getattr(post, 'reply_count', 0) or 0,
+                    "created_at": getattr(post.record, 'created_at', ''),
+                    "images": images,
+                    "video": None,
+                    "has_media": True
+                })
+            except Exception:
+                skipped_no_image += 1
+                continue
             
             if len(posts) >= limit:
                 break
@@ -3207,27 +3245,51 @@ def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_repos
             sessions[session_id]['_last_fetched'] = posts
             sessions[session_id]['_last_actor'] = actor
 
-        message = f"Fetched {len(posts)} image posts from @{actor}"
+        # ===== BUILD RESPONSE =====
+        if not posts:
+            if skipped_videos > 0:
+                return {
+                    "success": False,
+                    "error": f"⚠️ Found {skipped_videos} video post(s) but no image posts from @{actor}.",
+                    "total_scanned": total_posts_scanned,
+                    "skipped_videos": skipped_videos,
+                    "suggestion": "Try: fetch posts from motivationagency.bsky.social or quoteoftheday.bsky.social"
+                }
+            return {
+                "success": False,
+                "error": f"No image posts found from @{actor} (scanned {total_posts_scanned} posts).",
+                "suggestion": "Try: fetch posts from motivationagency.bsky.social"
+            }
+
+        # ===== SUCCESS WITH DETAILS =====
+        message = f"✅ Fetched {len(posts)} image posts from @{actor}"
         if skipped_videos > 0:
             message += f" (skipped {skipped_videos} video post(s))"
-        message += ". Say 'save them to the vault' to store them."
+        if skipped_no_image > 0:
+            message += f" (skipped {skipped_no_image} post(s) without images)"
+        message += f"\n📊 Scanned {total_posts_scanned} total posts."
+        message += "\n💡 Say 'save them to the vault' to store them."
 
         return {
             "success": True,
             "count": len(posts),
             "posts": posts,
+            "total_scanned": total_posts_scanned,
             "skipped_videos": skipped_videos,
+            "skipped_no_image": skipped_no_image,
             "message": message
         }
+        
     except Exception as e:
         error_msg = str(e)
         if "video" in error_msg.lower() or "embed" in error_msg.lower():
             return {
-                "success": False, 
-                "error": "Some posts contain video (unsupported). Try a different source or use media_only=True.",
+                "success": False,
+                "error": f"⚠️ '{actor}' has video posts which are not supported.",
+                "suggestion": "Try: fetch posts from motivationagency.bsky.social or quoteoftheday.bsky.social",
                 "details": error_msg
             }
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"Error: {error_msg}"}
 
 
 def tool_add_to_vault(posts: list = None, handler_handle: str = None, session_id: str = None) -> dict:
