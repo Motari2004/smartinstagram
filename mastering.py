@@ -1332,64 +1332,27 @@ def run_auto_once(name='default'):
             all_posts.extend(posts)
             print(f"📥 Fetched {len(posts)} posts from {source}")
         
-        
-        
-        
-        
-        
-        
-        
-        
         if not all_posts:
-            # ============================================================
-            # Nothing fetched at all from live sources → fall back to
-            # this niche's own vault reserve before giving up.
-            # ============================================================
-            fallback = tool_list_vault_by_status(
-                status='unposted',
-                limit=int(cfg.get('max_posts_per_run') or 2),
-                handler_handle=name
-            )
-            fallback_items = fallback.get('vault') or []
-            if not fallback_items:
-                result_msg = f"No posts from any source, and the '{name}' vault has nothing unposted either"
-                _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
-                return {"success": True, "posted_count": 0, "message": result_msg}
-            new_posts = [{"id": it["id"], "uri": it["uri"]} for it in fallback_items]
-            used_vault_fallback = True
-        else:
-            # ============================================================
-            # Save EVERY fresh post fetched this cycle to vault — not
-            # just the ones about to be posted. This is what builds the
-            # niche's reserve for future fallback cycles.
-            # ============================================================
-            tool_add_to_vault(all_posts, handler_handle=name)
+            result_msg = f"No posts from any source in '{name}'"
+            _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
+            return {"success": True, "posted_count": 0, "message": result_msg}
+        
+        # Filter new posts (not seen before)
+        for p in all_posts:
+            uri = p.get('uri')
+            if not uri or _auto_seen(uri, name):
+                continue
+            new_posts.append(p)
+            if len(new_posts) >= int(cfg.get('max_posts_per_run') or 2):
+                break
+        
+        if not new_posts:
+            result_msg = f"No new posts from any source in '{name}'"
+            _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
+            return {"success": True, "posted_count": 0, "message": result_msg}
 
-            # Now pick which ones to actually post THIS cycle
-            for p in all_posts:
-                uri = p.get('uri')
-                if not uri or _auto_seen(uri, name):
-                    continue
-                new_posts.append(p)
-                if len(new_posts) >= int(cfg.get('max_posts_per_run') or 2):
-                    break
-
-            used_vault_fallback = False
-
-            if not new_posts:
-                # All fetched posts were already seen → fall back to niche vault reserve
-                fallback = tool_list_vault_by_status(
-                    status='unposted',
-                    limit=int(cfg.get('max_posts_per_run') or 2),
-                    handler_handle=name
-                )
-                fallback_items = fallback.get('vault') or []
-                if not fallback_items:
-                    result_msg = f"No new posts from any source, and the '{name}' vault has nothing unposted either"
-                    _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
-                    return {"success": True, "posted_count": 0, "message": result_msg}
-                new_posts = [{"id": it["id"], "uri": it["uri"]} for it in fallback_items]
-                used_vault_fallback = True
+        # Save to vault
+        tool_add_to_vault(new_posts, handler_handle=name)
 
         account_id = resolve_instagram_account_id(cfg.get('account_id'), cfg.get('account_username'))
         account_username = cfg.get('account_username')
@@ -1404,27 +1367,19 @@ def run_auto_once(name='default'):
         errors = []
         for p in new_posts:
             r = tool_post_now(
-                vault_id=p.get('id') if used_vault_fallback else None,
                 uri=p.get('uri'),
                 content_type=content_type,
                 account_id=account_id,
                 account_username=account_username
             )
-            if not used_vault_fallback:
-                _auto_mark_seen(p.get('uri'), posted=bool(r.get('success')), config_name=name)
+            _auto_mark_seen(p.get('uri'), posted=bool(r.get('success')), config_name=name)
             if r.get('success'):
                 posted += 1
             else:
                 errors.append(r.get('error'))
             time.sleep(1.5)
 
-        fallback_note = " [posted from niche vault reserve]" if used_vault_fallback else ""
-        result_msg = f"Auto: posted {posted}/{len(new_posts)} from {len(sources)} sources in '{name}'{fallback_note}"
-        
-        
-        
-        
-        
+        result_msg = f"Auto: posted {posted}/{len(new_posts)} from {len(sources)} sources in '{name}'"
         _save_auto_config({
             **cfg,
             'last_error': '; '.join(errors) if errors else None,
@@ -1450,108 +1405,6 @@ def run_auto_once(name='default'):
     print("🤖 Auto pilot loop stopped")
 
 
-
-
-
-
-def tool_master_fetch_niche(name: str = None, limit_per_source: int = 10) -> dict:
-    """
-    'Master fetch' — pulls fresh posts from ALL sources in a niche pipeline
-    and saves them to that niche's vault (handler_handle = pipeline name).
-    Does NOT post anything. Pure reserve-building.
-    """
-    if not name:
-        return {"success": False, "error": "Provide the niche/pipeline name"}
-
-    resolved = _resolve_pipeline_name(name) or name
-    cfg = _load_auto_config(resolved)
-    if not cfg:
-        existing = [c.get('name') for c in _list_auto_configs()]
-        return {
-            "success": False,
-            "error": f"Pipeline '{name}' not found",
-            "existing": existing,
-            "message": f"No pipeline matching '{name}'. Existing: {', '.join(existing) or 'none'}"
-        }
-
-    sources = cfg.get('source_handles') or []
-    if not sources:
-        return {"success": False, "error": f"Pipeline '{resolved}' has no source handles configured"}
-
-    client, session_id = _get_bluesky_client_for_auto(cfg)
-    if not client or not session_id:
-        return {"success": False, "error": "Could not get a Bluesky session for fetching"}
-
-    all_fetched = []
-    per_source = {}
-    errors = {}
-
-    for source in sources:
-        fetch = tool_fetch_posts(
-            session_id=session_id,
-            actor=source,
-            limit=limit_per_source,
-            include_reposts=bool(cfg.get('include_reposts')),
-            media_only=bool(cfg.get('media_only', True))
-        )
-        if not fetch.get('success'):
-            errors[source] = fetch.get('error')
-            continue
-        posts = fetch.get('posts') or []
-        all_fetched.extend(posts)
-        per_source[source] = len(posts)
-
-    if not all_fetched:
-        result_msg = f"Master fetch for '{resolved}': nothing new found across {len(sources)} source(s)"
-        return {
-            "success": True,
-            "fetched_count": 0,
-            "sources": sources,
-            "per_source": per_source,
-            "errors": errors,
-            "message": result_msg
-        }
-
-    save_result = tool_add_to_vault(all_fetched, handler_handle=resolved)
-    saved = save_result.get('saved', 0) if save_result.get('success') else 0
-
-    result_msg = (
-        f"✅ Master fetch for '{resolved}': saved {saved} post(s) to vault "
-        f"from {len(sources)} source(s)"
-    )
-    print(f"🗃️ {result_msg}")
-
-    return {
-        "success": True,
-        "fetched_count": len(all_fetched),
-        "saved_count": saved,
-        "sources": sources,
-        "per_source": per_source,
-        "errors": errors if errors else None,
-        "message": result_msg
-    }
-
-
-def tool_master_fetch_all_niches(limit_per_source: int = 10) -> dict:
-    """Run master fetch for every configured niche pipeline."""
-    configs = _list_auto_configs()
-    if not configs:
-        return {"success": False, "error": "No pipelines configured"}
-
-    results = []
-    total_saved = 0
-    for cfg in configs:
-        r = tool_master_fetch_niche(name=cfg.get('name'), limit_per_source=limit_per_source)
-        results.append({"name": cfg.get('name'), "result": r})
-        total_saved += r.get('saved_count', 0)
-
-    return {
-        "success": True,
-        "niches_processed": len(results),
-        "total_saved": total_saved,
-        "results": results,
-        "message": f"Master fetch complete for {len(results)} niche(s) — {total_saved} post(s) saved total"
-    }
 
 
 
@@ -3334,22 +3187,16 @@ def tool_list_vault(limit: int = 30, handler_handle: str = None) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def tool_list_vault_by_status(status=None, limit=50, offset=0, handler_handle=None):
-    """List vault items filtered by post status and optionally by niche/handler_handle."""
+def tool_list_vault_by_status(status=None, limit=50, offset=0):
+    """List vault items filtered by post status."""
     conn = get_db_connection()
     if not conn:
         return {"success": False, "error": "DB unavailable"}
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        handler_filter = ""
-        handler_params = []
-        if handler_handle:
-            handler_filter = " AND v.handler_handle = %s"
-            handler_params = [handler_handle]
-
+        
         if status == 'unposted':
-            cur.execute(f"""
+            cur.execute("""
                 SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
                        v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
                        v.handler_handle, v.notes,
@@ -3358,36 +3205,36 @@ def tool_list_vault_by_status(status=None, limit=50, offset=0, handler_handle=No
                 WHERE NOT EXISTS (
                     SELECT 1 FROM posted_posts p 
                     WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                ){handler_filter}
+                )
                 ORDER BY v.saved_at DESC
                 LIMIT %s OFFSET %s
-            """, (*handler_params, limit, offset))
+            """, (limit, offset))
         elif status in ('posted', 'completed'):
-            cur.execute(f"""
+            cur.execute("""
                 SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
                        v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
                        v.handler_handle, v.notes,
                        p.status as post_status, p.posted_at, p.platform_post_id
                 FROM vault v
                 INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted'){handler_filter}
+                WHERE p.status IN ('completed', 'posted')
                 ORDER BY p.posted_at DESC
                 LIMIT %s OFFSET %s
-            """, (*handler_params, limit, offset))
+            """, (limit, offset))
         elif status == 'scheduled':
-            cur.execute(f"""
+            cur.execute("""
                 SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
                        v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
                        v.handler_handle, v.notes,
                        p.status as post_status, p.posted_at, p.platform_post_id
                 FROM vault v
                 INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'{handler_filter}
+                WHERE p.status = 'scheduled'
                 ORDER BY p.posted_at DESC
                 LIMIT %s OFFSET %s
-            """, (*handler_params, limit, offset))
+            """, (limit, offset))
         else:
-            cur.execute(f"""
+            cur.execute("""
                 SELECT v.id, v.uri, v.author, v.display_name, v.text, v.images, v.video, 
                        v.likes, v.reposts, v.replies, v.created_at, v.saved_at, 
                        v.handler_handle, v.notes,
@@ -3395,36 +3242,35 @@ def tool_list_vault_by_status(status=None, limit=50, offset=0, handler_handle=No
                        p.posted_at, p.platform_post_id
                 FROM vault v
                 LEFT JOIN posted_posts p ON p.uri = v.uri
-                WHERE 1=1{handler_filter}
                 ORDER BY v.saved_at DESC
                 LIMIT %s OFFSET %s
-            """, (*handler_params, limit, offset))
+            """, (limit, offset))
         
         rows = cur.fetchall()
         
-        # Get total count for the filtered query (same filter, no limit/offset)
+        # Get total count for the filtered query
         if status == 'unposted':
-            cur.execute(f"""
+            cur.execute("""
                 SELECT COUNT(*) FROM vault v
                 WHERE NOT EXISTS (
                     SELECT 1 FROM posted_posts p 
                     WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                ){handler_filter}
-            """, tuple(handler_params))
+                )
+            """)
         elif status in ('posted', 'completed'):
-            cur.execute(f"""
+            cur.execute("""
                 SELECT COUNT(*) FROM vault v
                 INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted'){handler_filter}
-            """, tuple(handler_params))
+                WHERE p.status IN ('completed', 'posted')
+            """)
         elif status == 'scheduled':
-            cur.execute(f"""
+            cur.execute("""
                 SELECT COUNT(*) FROM vault v
                 INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'{handler_filter}
-            """, tuple(handler_params))
+                WHERE p.status = 'scheduled'
+            """)
         else:
-            cur.execute(f"SELECT COUNT(*) FROM vault v WHERE 1=1{handler_filter}", tuple(handler_params))
+            cur.execute("SELECT COUNT(*) FROM vault")
         
         total = cur.fetchone()['count']
         cur.close()
@@ -3451,7 +3297,7 @@ def tool_list_vault_by_status(status=None, limit=50, offset=0, handler_handle=No
                 "posted_at": r['posted_at'].isoformat() if r.get('posted_at') else None,
                 "platform_post_id": r.get('platform_post_id'),
             })
-        return {"success": True, "vault": vault, "count": total, "status_filter": status or 'all', "handler_filter": handler_handle}
+        return {"success": True, "vault": vault, "count": total, "status_filter": status or 'all'}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -4888,11 +4734,9 @@ TOOL_MAP = {
     "remove_source_from_niche": tool_remove_source_from_niche,
     "list_niche_sources": tool_list_niche_sources,
     "list_all_niches": tool_list_all_niches,
-    
-    # ===== MASTER FETCH TOOLS =====
-    "master_fetch_niche": tool_master_fetch_niche,
-    "master_fetch_all_niches": tool_master_fetch_all_niches,
 }
+
+
 
 
 
@@ -5021,7 +4865,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "list_vault_by_status",
-            "description": "List vault items filtered by post status. Use 'unposted' for items not yet posted, 'posted' for already posted, 'scheduled' for scheduled, or 'all' for everything. Optionally filter to one niche/pipeline with handler_handle.",
+            "description": "List vault items filtered by post status. Use 'unposted' for items not yet posted, 'posted' for already posted, 'scheduled' for scheduled, or 'all' for everything.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -5031,11 +4875,7 @@ TOOLS_SCHEMA = [
                         "description": "Filter by post status"
                     },
                     "limit": {"type": "integer", "default": 50},
-                    "offset": {"type": "integer", "default": 0},
-                    "handler_handle": {
-                        "type": "string",
-                        "description": "Optional. Restrict results to one niche/pipeline name (matches vault.handler_handle)."
-                    }
+                    "offset": {"type": "integer", "default": 0}
                 }
             }
         }
@@ -5378,35 +5218,6 @@ TOOLS_SCHEMA = [
                 }
             }
         }
-    },
-    # ===== MASTER FETCH TOOLS (niche vault reserve builders) =====
-    {
-        "type": "function",
-        "function": {
-            "name": "master_fetch_niche",
-            "description": "Pull fresh posts from all sources in one niche pipeline and save them to that niche's vault WITHOUT posting. Use to top up a niche's reserve. Use when user says 'master fetch X' or clicks the master button for niche X.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Niche/pipeline name"},
-                    "limit_per_source": {"type": "integer", "default": 10}
-                },
-                "required": ["name"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "master_fetch_all_niches",
-            "description": "Run master fetch for every niche pipeline at once, topping up all vaults without posting anything.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit_per_source": {"type": "integer", "default": 10}
-                }
-            }
-        }
     }
 ]
 
@@ -5428,25 +5239,6 @@ CORE FUNCTIONALITY:
 - Destination: Instagram ONLY (via Zernio)
 - Facebook, Threads, TikTok, Twitter are NOT supported
 - Timezone: Africa/Nairobi
-
-
-
-
-===========================================
-MASTER FETCH (BUILD NICHE RESERVE — DOES NOT POST):
-===========================================
-- "master fetch [niche]" → master_fetch_niche(name="[niche]")
-  → Pulls fresh posts from ALL sources in that niche and saves to vault
-  → Does NOT publish anything — pure reserve-building
-  → Use when user wants to "top up" or "fill" a niche's vault ahead of time
-- "master fetch all" / "top up all niches" → master_fetch_all_niches()
-- This is different from auto_run_now: auto_run_now fetches AND posts;
-  master_fetch only fetches and saves.
-
-
-
-
-
 
 ===========================================
 HOW THE AUTOMATION WORKS:
@@ -5847,13 +5639,11 @@ def execute_tool(name, arguments, session_id=None):
             return fn(limit=int(arguments.get('limit') or 30))
         
         # ===== NEW VAULT MANAGEMENT TOOLS =====
-        # ===== NEW VAULT MANAGEMENT TOOLS =====
         if name == 'list_vault_by_status':
             return fn(
                 status=arguments.get('status', 'all'),
                 limit=int(arguments.get('limit', 50)),
-                offset=int(arguments.get('offset', 0)),
-                handler_handle=arguments.get('handler_handle')
+                offset=int(arguments.get('offset', 0))
             )
         
         if name == 'delete_vault_items':
@@ -5964,15 +5754,6 @@ def execute_tool(name, arguments, session_id=None):
                 platform=arguments.get('platform'),
                 confirm=arguments.get('confirm')
             )
-
-        if name == 'master_fetch_niche':
-            return fn(
-                name=arguments.get('name'),
-                limit_per_source=int(arguments.get('limit_per_source', 10))
-            )
-
-        if name == 'master_fetch_all_niches':
-            return fn(limit_per_source=int(arguments.get('limit_per_source', 10)))
         
         # For any other tool, just call it directly
         return fn(**arguments)
@@ -7654,91 +7435,6 @@ def api_delete_all_accounts():
     
     result = tool_delete_all_accounts_permanently(platform, confirm)
     return jsonify(result), (200 if result.get('success') else 400)
-
-
-
-
-
-
-@app.route('/api/niche/master-fetch', methods=['POST'])
-def api_master_fetch_niche():
-    """Master fetch button — top up one niche's vault reserve."""
-    data = request.json or {}
-    name = data.get('name')
-    limit_per_source = int(data.get('limit_per_source', 10))
-    result = tool_master_fetch_niche(name=name, limit_per_source=limit_per_source)
-    return jsonify(result), (200 if result.get('success') else 400)
-
-
-@app.route('/api/niche/master-fetch-all', methods=['POST'])
-def api_master_fetch_all():
-    """Top up ALL niche vaults in one click."""
-    data = request.json or {}
-    limit_per_source = int(data.get('limit_per_source', 10))
-    result = tool_master_fetch_all_niches(limit_per_source=limit_per_source)
-    return jsonify(result), (200 if result.get('success') else 400)
-
-
-
-
-
-
-
-
-
-@app.route('/api/master/status', methods=['GET'])
-def api_master_status():
-    """Get master account status with vault counts per niche/pipeline."""
-    try:
-        configs = _list_auto_configs()
-        niches = []
-        
-        for cfg in configs:
-            name = cfg.get('name')
-            # Count unposted posts in this niche's vault
-            conn = get_db_connection()
-            count = 0
-            if conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT COUNT(*) FROM vault v
-                    WHERE v.handler_handle = %s
-                    AND NOT EXISTS (
-                        SELECT 1 FROM posted_posts p 
-                        WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                    )
-                """, (name,))
-                count = cur.fetchone()[0]
-                cur.close()
-                conn.close()
-            
-            niches.append({
-                "niche": name,
-                "count": count,
-                "enabled": cfg.get('enabled', False),
-                "source_handles": cfg.get('source_handles', []),
-                "destination": cfg.get('account_username')
-            })
-        
-        # Get master Bluesky account info
-        master_handle = BLUESKY_MASTER_HANDLE or "Not configured"
-        
-        return jsonify({
-            "success": True,
-            "master_handle": master_handle,
-            "niches": niches,
-            "total_reserve": sum(n.get('count', 0) for n in niches),
-            "total_niches": len(niches),
-            "timestamp": datetime.now().isoformat()
-        })
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-
-
-
 
 
 

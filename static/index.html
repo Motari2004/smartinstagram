@@ -743,15 +743,38 @@
 
         
 
-        <div class="auto-banner" id="autoBanner">
-            <div class="auto-title">
-                <span class="live-dot" id="autoDot"></span>
-                <span id="autoTitle">Auto pilot idle</span>
-                <span class="auto-count" id="autoPipelinesCount">0</span>
-            </div>
-            <div class="auto-meta" id="autoMeta">Not configured yet</div>
-            <div id="pipelineList"></div>
-        </div>
+<div class="auto-banner" id="autoBanner">
+    <div class="auto-title">
+        <span class="live-dot" id="autoDot"></span>
+        <span id="autoTitle">Auto pilot idle</span>
+        <span class="auto-count" id="autoPipelinesCount">0</span>
+    </div>
+    <div class="auto-meta" id="autoMeta">Not configured yet</div>
+    
+    <!-- ===== PIPELINE LIST WITH MASTER FETCH BUTTONS ===== -->
+    <div id="pipelineList"></div>
+    
+    <!-- ===== MASTER FETCH ALL BUTTON ===== -->
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="masterFetchAll()" class="btn btn-secondary" style="flex:1;min-width:80px;justify-content:center;font-size:11px;padding:6px 12px;">
+            <i class="fas fa-database"></i> Fetch All
+        </button>
+        <button onclick="masterFetchStatus()" class="btn btn-secondary" style="flex:1;min-width:80px;justify-content:center;font-size:11px;padding:6px 12px;">
+            <i class="fas fa-chart-simple"></i> Reserve Status
+        </button>
+    </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
 
         <div class="sidebar-actions">
             <button class="btn btn-secondary" onclick="refreshStatus()">
@@ -1107,9 +1130,26 @@ async function refreshAutoStatus() {
         const res = await fetch(`${API}/api/auto/status`);
         const data = await res.json();
         if (!data.success) return;
+        
         const pipelines = data.pipelines || [];
         const enabledList = pipelines.filter(p => p.enabled);
         const on = !!(data.running && enabledList.length);
+        
+        // ===== FETCH MASTER VAULT STATUS =====
+        let masterStatus = {};
+        try {
+            const masterRes = await fetch(`${API}/api/master/status`);
+            const masterData = await masterRes.json();
+            if (masterData.success) {
+                const niches = masterData.niches || [];
+                niches.forEach(n => {
+                    masterStatus[n.niche] = n.count || 0;
+                });
+            }
+        } catch (e) {
+            console.warn('Master status fetch failed:', e);
+        }
+        
         const banner = $('autoBanner');
         const dot = $('autoDot');
         const title = $('autoTitle');
@@ -1120,11 +1160,13 @@ async function refreshAutoStatus() {
         const btn = $('autoToggleBtn');
         const pipelineList = $('pipelineList');
         const pipelinesCount = $('autoPipelinesCount');
+        
         if (banner) banner.classList.toggle('running', on);
         if (header) header.classList.toggle('on', on);
         if (dot) dot.className = 'live-dot' + (on ? ' on' : (enabledList.length ? ' warn' : ''));
         if (headerDot) headerDot.className = 'live-dot' + (on ? ' on' : (enabledList.length ? ' warn' : ''));
         if (pipelinesCount) pipelinesCount.textContent = String(pipelines.length);
+        
         if (title) {
             if (on) title.textContent = `Auto ON · ${enabledList.length} active`;
             else if (enabledList.length) title.textContent = `Enabled · waiting`;
@@ -1146,6 +1188,8 @@ async function refreshAutoStatus() {
             if (lastError) parts.push(`<span style="color:var(--error)">err</span>`);
             meta.innerHTML = parts.join(' · ');
         }
+        
+        // ===== UPDATED: PIPELINE LIST WITH MASTER FETCH BUTTONS =====
         if (pipelineList) {
             if (!pipelines.length) {
                 pipelineList.innerHTML = '<div class="pipe-empty">No pipelines configured</div>';
@@ -1156,16 +1200,35 @@ async function refreshAutoStatus() {
                     const dotCls = isOn ? 'on' : (isWait ? 'warn' : '');
                     const src = p.source_handle || '?';
                     const dest = p.account_username || '?';
-                    return `<div class="pipe-row" title="${escapeHtml(p.name || '')}: @${escapeHtml(src)} → ${escapeHtml(String(dest))}">
+                    const name = p.name || 'unnamed';
+                    
+                    // Get master vault count for this niche
+                    const reserveCount = masterStatus[name] !== undefined ? masterStatus[name] : '—';
+                    
+                    return `<div class="pipe-row" title="${escapeHtml(name)}: @${escapeHtml(src)} → ${escapeHtml(String(dest))}">
                         <span class="pipe-dot ${dotCls}"></span>
                         <div class="pipe-body">
-                            <div class="pipe-name">${escapeHtml(p.name || 'unnamed')}</div>
-                            <div class="pipe-route">@${escapeHtml(src)} → ${escapeHtml(String(dest))}</div>
+                            <div class="pipe-name">${escapeHtml(name)}</div>
+                            <div class="pipe-route">
+                                @${escapeHtml(src)} → ${escapeHtml(String(dest))}
+                                <span style="font-size:9px;color:var(--text-muted);margin-left:8px;">
+                                    📦 ${reserveCount}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="pipe-actions">
+                            <button onclick="masterFetchNiche('${escapeHtml(name)}')" title="Master Fetch (fill reserve)" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:2px 4px;">
+                                <i class="fas fa-download"></i>
+                            </button>
+                            ${isOn ? `<button onclick="togglePipeline('${escapeHtml(name)}')" class="pause" title="Stop"><i class="fas fa-pause"></i></button>` :
+                                      `<button onclick="togglePipeline('${escapeHtml(name)}')" class="play" title="Start"><i class="fas fa-play"></i></button>`}
+                            <button onclick="deletePipeline('${escapeHtml(name)}')" class="delete" title="Delete"><i class="fas fa-trash"></i></button>
                         </div>
                     </div>`;
                 }).join('');
             }
         }
+        
         if (btn) {
             btn.innerHTML = on
                 ? '<i class="fas fa-stop"></i> Stop auto'
@@ -1174,6 +1237,10 @@ async function refreshAutoStatus() {
         window._autoRunning = on;
     } catch (e) { console.warn('auto status refresh failed', e); }
 }
+
+
+
+
 
 async function toggleAuto() {
     const btn = $('autoToggleBtn');
