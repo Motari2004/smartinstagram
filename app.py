@@ -2912,20 +2912,9 @@ def is_post_already_posted(uri, platform):
 # ============================================================
 
 def extract_images_from_embed(embed):
-    """Extract images from embed. Returns empty list for videos."""
     images = []
     if not embed:
         return images
-    
-    # ===== SKIP VIDEOS =====
-    try:
-        embed_type = getattr(embed, 'py_type', '') or getattr(embed, '$type', '')
-        if 'video' in embed_type.lower():
-            return images  # Return empty list for videos
-    except Exception:
-        return images
-    
-    # Extract images from embed
     if hasattr(embed, 'images') and embed.images:
         for img in embed.images:
             data = {}
@@ -2938,8 +2927,21 @@ def extract_images_from_embed(embed):
             data['thumb'] = getattr(img, 'thumb', data['url'])
             data['alt'] = getattr(img, 'alt', '') or ''
             images.append(data)
-    
     return images
+
+
+def extract_video_from_embed(embed):
+    if not embed:
+        return None
+    if hasattr(embed, 'playlist'):
+        return {
+            'playlist': embed.playlist,
+            'cid': getattr(embed, 'cid', None),
+            'thumbnail': getattr(embed, 'thumbnail', None),
+            'type': 'hls'
+        }
+    return None
+
 
 def is_reply(post):
     try:
