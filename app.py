@@ -1285,8 +1285,6 @@ def _get_bluesky_client_for_auto(cfg):
 
 def run_auto_once(name='default'):
     """One autonomous cycle: fetch from ALL sources in niche → vault → post."""
-    
-    # ===== STEP 1: Check Zernio keys =====
     key_status = ensure_zernio_keys_loaded(for_auto=True)
     if not key_status.get('success'):
         return {
@@ -1304,36 +1302,20 @@ def run_auto_once(name='default'):
     # Get ALL sources from this niche
     sources = cfg.get('source_handles') or []
     if not sources:
-        msg = f"No source handles configured for '{name}'"
-        _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
-        return {"success": False, "error": msg}
+        return {"success": False, "error": "No source handles configured"}
 
-    # ===== STEP 2: SMART CLIENT - Auto-login with fallback =====
     client, session_id = _get_bluesky_client_for_auto(cfg)
     if not client or not session_id:
-        # Try to login with master account
-        if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
-            print(f"🔄 No session, auto-logging with master: @{BLUESKY_MASTER_HANDLE}")
-            login_result = tool_login(BLUESKY_MASTER_HANDLE, BLUESKY_MASTER_PASSWORD)
-            if login_result.get('success'):
-                session_id = login_result['session_id']
-                client = sessions[session_id]['client']
-                print(f"✅ Master login successful: @{BLUESKY_MASTER_HANDLE}")
-            else:
-                msg = f"Master login failed: {login_result.get('error')}"
-                _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
-                return {"success": False, "error": msg}
-        else:
-            msg = "No Bluesky session. Login once in chat, or set BLUESKY_MASTER_HANDLE in .env"
-            _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
-            return {"success": False, "error": msg}
+        msg = "No Bluesky session. Login once in chat, or set bluesky_handle + app password in auto config."
+        _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
+        return {"success": False, "error": msg}
 
     try:
         all_posts = []
         new_posts = []
         errors_per_source = {}
         
-        # ===== STEP 3: Fetch from EACH source =====
+        # Fetch from EACH source
         for source in sources:
             fetch = tool_fetch_posts(
                 session_id=session_id,
@@ -1355,7 +1337,7 @@ def run_auto_once(name='default'):
             _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
             return {"success": True, "posted_count": 0, "message": result_msg}
         
-        # ===== STEP 4: Filter new posts (not seen before) =====
+        # Filter new posts (not seen before)
         for p in all_posts:
             uri = p.get('uri')
             if not uri or _auto_seen(uri, name):
@@ -1369,20 +1351,18 @@ def run_auto_once(name='default'):
             _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
             return {"success": True, "posted_count": 0, "message": result_msg}
 
-        # ===== STEP 5: Save to vault =====
+        # Save to vault
         tool_add_to_vault(new_posts, handler_handle=name)
 
-        # ===== STEP 6: Resolve Instagram account =====
         account_id = resolve_instagram_account_id(cfg.get('account_id'), cfg.get('account_username'))
         account_username = cfg.get('account_username')
         content_type = cfg.get('content_type') or 'feed'
         
         if not account_id:
-            msg = f"❌ No valid Instagram account for pipeline '{name}': {cfg.get('account_id')} / {account_username}"
+            msg = f"Bad Instagram account on pipeline {name}: {cfg.get('account_id')} / {account_username}"
             _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
-            return {"success": False, "error": msg, "fix": f"auto setup name={name} account_username=easternfrontdaily"}
+            return {"success": False, "error": msg}
         
-        # ===== STEP 7: Post to Instagram =====
         posted = 0
         errors = []
         for p in new_posts:
@@ -1399,7 +1379,6 @@ def run_auto_once(name='default'):
                 errors.append(r.get('error'))
             time.sleep(1.5)
 
-        # ===== STEP 8: Save results =====
         result_msg = f"Auto: posted {posted}/{len(new_posts)} from {len(sources)} sources in '{name}'"
         _save_auto_config({
             **cfg,
@@ -1417,29 +1396,11 @@ def run_auto_once(name='default'):
             "errors": errors_per_source,
             "message": result_msg
         }
-        
     except Exception as e:
         traceback.print_exc()
-        error_msg = str(e)
-        
-        # ===== SMART ERROR HANDLING =====
-        # Check if it's a known error and provide fix
-        if "resolve_instagram_account_id" in error_msg or "account_id" in error_msg:
-            fix_msg = f"Fix: auto setup name={name} account_username=easternfrontdaily"
-        elif "source" in error_msg.lower():
-            fix_msg = f"Fix: auto setup name={name} source_handles=['source.bsky.social'] account_username=easternfrontdaily"
-        elif "session" in error_msg.lower() or "login" in error_msg.lower():
-            fix_msg = "Fix: Set BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD in .env"
-        else:
-            fix_msg = "Check logs for details"
-        
-        _save_auto_config({**cfg, 'last_error': f"{error_msg} | {fix_msg}", 'last_run_at': datetime.now()})
-        return {
-            "success": False, 
-            "error": error_msg,
-            "fix": fix_msg,
-            "message": f"❌ {error_msg} | {fix_msg}"
-        }
+        _save_auto_config({**cfg, 'last_error': str(e), 'last_run_at': datetime.now()})
+        return {"success": False, "error": str(e)}
+
 
     print("🤖 Auto pilot loop stopped")
 
@@ -2969,17 +2930,9 @@ def is_repost(post):
 # ============================================================
 
 def tool_login(username: str = None, password: str = None) -> dict:
-    """
-    Smart login: 
-    1. If credentials provided, try them first
-    2. If they fail, auto-fallback to master account from .env
-    3. If no credentials provided, use master account
-    """
+    """Login to Bluesky and create a persistent session."""
     try:
-        attempted_username = username
-        attempted_password = password
-        
-        # If no credentials provided, use master from .env
+        # If no credentials provided, try master from .env
         if not username or not password:
             if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
                 username = BLUESKY_MASTER_HANDLE
@@ -2988,113 +2941,40 @@ def tool_login(username: str = None, password: str = None) -> dict:
             else:
                 return {"success": False, "error": "No credentials provided and no master account in .env"}
         
-        # Try to login with provided credentials
-        try:
-            client = Client()
-            client.login(username, password)
-            profile = client.get_profile(username)
-            session_id = f"{username}_{int(datetime.now().timestamp())}"
-            session_string = client.export_session_string()
-            expires_at = datetime.now() + timedelta(days=30)
+        client = Client()
+        client.login(username, password)
+        profile = client.get_profile(username)
+        session_id = f"{username}_{int(datetime.now().timestamp())}"
+        session_string = client.export_session_string()
+        expires_at = datetime.now() + timedelta(days=30)
 
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute('DELETE FROM sessions WHERE handle = %s', (profile.handle,))
-                cur.execute('''
-                    INSERT INTO sessions (session_id, username, handle, display_name, avatar, session_string, expires_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ''', (session_id, username, profile.handle, profile.display_name or username, profile.avatar, session_string, expires_at))
-                conn.commit()
-                cur.close()
-                conn.close()
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute('DELETE FROM sessions WHERE handle = %s', (profile.handle,))
+            cur.execute('''
+                INSERT INTO sessions (session_id, username, handle, display_name, avatar, session_string, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ''', (session_id, username, profile.handle, profile.display_name or username, profile.avatar, session_string, expires_at))
+            conn.commit()
+            cur.close()
+            conn.close()
 
-            sessions[session_id] = {
-                'client': client,
-                'username': username,
-                'handle': profile.handle,
-                'display_name': profile.display_name or username,
-                'avatar': profile.avatar,
-                'session_string': session_string
-            }
-            
-            # Check if this was a fallback or manual login
-            is_master = (username == BLUESKY_MASTER_HANDLE)
-            if attempted_username and attempted_username != BLUESKY_MASTER_HANDLE and not is_master:
-                print(f"✅ Manual login successful: @{profile.handle}")
-                return {
-                    "success": True,
-                    "session_id": session_id,
-                    "handle": profile.handle,
-                    "display_name": profile.display_name or username,
-                    "message": f"✅ Logged in as @{profile.handle}"
-                }
-            else:
-                return {
-                    "success": True,
-                    "session_id": session_id,
-                    "handle": profile.handle,
-                    "display_name": profile.display_name or username,
-                    "message": f"✅ Logged in as @{profile.handle} (using master account from .env)"
-                }
-                
-        except Exception as login_error:
-            # ===== SMART FALLBACK: If login fails, try master account =====
-            print(f"⚠️ Login failed for '{username}': {login_error}")
-            
-            # If we already tried the master account and it failed, return error
-            if username == BLUESKY_MASTER_HANDLE:
-                return {"success": False, "error": f"Master login failed: {str(login_error)}"}
-            
-            # If master account exists, try it as fallback
-            if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
-                print(f"🔄 Auto-fallback to master account: @{BLUESKY_MASTER_HANDLE}")
-                try:
-                    client = Client()
-                    client.login(BLUESKY_MASTER_HANDLE, BLUESKY_MASTER_PASSWORD)
-                    profile = client.get_profile(BLUESKY_MASTER_HANDLE)
-                    session_id = f"master_{int(datetime.now().timestamp())}"
-                    session_string = client.export_session_string()
-                    expires_at = datetime.now() + timedelta(days=30)
-
-                    conn = get_db_connection()
-                    if conn:
-                        cur = conn.cursor()
-                        cur.execute('DELETE FROM sessions WHERE handle = %s', (profile.handle,))
-                        cur.execute('''
-                            INSERT INTO sessions (session_id, username, handle, display_name, avatar, session_string, expires_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ''', (session_id, BLUESKY_MASTER_HANDLE, profile.handle, profile.display_name or BLUESKY_MASTER_HANDLE, profile.avatar, session_string, expires_at))
-                        conn.commit()
-                        cur.close()
-                        conn.close()
-
-                    sessions[session_id] = {
-                        'client': client,
-                        'username': BLUESKY_MASTER_HANDLE,
-                        'handle': profile.handle,
-                        'display_name': profile.display_name or BLUESKY_MASTER_HANDLE,
-                        'avatar': profile.avatar,
-                        'session_string': session_string
-                    }
-                    
-                    return {
-                        "success": True,
-                        "session_id": session_id,
-                        "handle": profile.handle,
-                        "display_name": profile.display_name or BLUESKY_MASTER_HANDLE,
-                        "message": f"⚠️ '{username}' login failed, but auto-logged in as master: @{profile.handle}",
-                        "fallback_used": True,
-                        "original_error": str(login_error)
-                    }
-                except Exception as master_error:
-                    return {
-                        "success": False, 
-                        "error": f"Manual login failed: {str(login_error)}. Master fallback also failed: {str(master_error)}"
-                    }
-            else:
-                return {"success": False, "error": f"Login failed: {str(login_error)}. No master account configured for fallback."}
-                
+        sessions[session_id] = {
+            'client': client,
+            'username': username,
+            'handle': profile.handle,
+            'display_name': profile.display_name or username,
+            'avatar': profile.avatar,
+            'session_string': session_string
+        }
+        return {
+            "success": True,
+            "session_id": session_id,
+            "handle": profile.handle,
+            "display_name": profile.display_name or username,
+            "message": f"Logged in as @{profile.handle} (master: {username == BLUESKY_MASTER_HANDLE})"
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -3117,7 +2997,6 @@ def tool_restore_session(handle: str) -> dict:
         if not row:
             return {"success": False, "error": "No valid session found. Please login again."}
 
-        # Unpack all columns correctly (7 columns)
         session_id, username, handle, display_name, avatar, session_string, expires_at = row
         client = Client()
         client.login(session_string=session_string)
