@@ -1125,6 +1125,137 @@ async function refreshStatus() {
     refreshAutoStatus();
 }
 
+// ============================================================
+// MASTER FETCH FUNCTIONS (for the pipeline buttons)
+// ============================================================
+
+async function masterFetchNiche(nicheName) {
+    if (!nicheName) return;
+    try {
+        toast(`🔄 Fetching reserve for "${nicheName}"...`, 'info');
+        const res = await fetch(`${API}/api/niche/master-fetch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                name: nicheName,
+                limit_per_source: 10
+            })
+        });
+        const data = await res.json();
+        if (data.success) {
+            toast(`✅ ${data.message || 'Reserve updated!'}`, 'success');
+            refreshAutoStatus();
+        } else {
+            toast(`❌ ${data.error || 'Fetch failed'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Error: ${e.message}`, 'error');
+    }
+}
+
+async function masterFetchAll() {
+    try {
+        toast(`🔄 Fetching all niches...`, 'info');
+        const res = await fetch(`${API}/api/niche/master-fetch-all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ limit_per_source: 10 })
+        });
+        const data = await res.json();
+        if (data.success) {
+            toast(`✅ ${data.message || 'All reserves updated!'}`, 'success');
+            refreshAutoStatus();
+        } else {
+            toast(`❌ ${data.error || 'Fetch failed'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Error: ${e.message}`, 'error');
+    }
+}
+
+async function masterFetchStatus() {
+    try {
+        const res = await fetch(`${API}/api/master/status`);
+        const data = await res.json();
+        if (!data.success) {
+            toast(`❌ ${data.error || 'Failed to get status'}`, 'error');
+            return;
+        }
+        
+        const niches = data.niches || [];
+        if (!niches.length) {
+            toast(`📦 No niches configured yet`, 'info');
+            return;
+        }
+        
+        let msg = `📦 Reserve Status:\n`;
+        niches.forEach(n => {
+            const status = n.enabled ? '🟢' : '🔴';
+            msg += `${status} ${n.niche}: ${n.count} posts (${n.source_handles?.length || 0} sources)\n`;
+        });
+        msg += `\nTotal: ${data.total_reserve} posts across ${data.total_niches} niches`;
+        
+        // Show in chat instead of toast (toast doesn't support multi-line well)
+        addMessage('assistant', msg, ['master_fetch_status']);
+    } catch (e) {
+        toast(`❌ Error: ${e.message}`, 'error');
+    }
+}
+
+async function togglePipeline(name) {
+    if (!name) return;
+    try {
+        const pipelines = window._pipelines || [];
+        const p = pipelines.find(p => p.name === name);
+        if (!p) return;
+        
+        const action = p.enabled ? 'stop' : 'start';
+        const endpoint = `${API}/api/auto/${action}`;
+        
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            toast(`✅ ${data.message || `Pipeline ${action}ed`}`, 'success');
+            refreshAutoStatus();
+        } else {
+            toast(`❌ ${data.error || 'Action failed'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Error: ${e.message}`, 'error');
+    }
+}
+
+async function deletePipeline(name) {
+    if (!name) return;
+    if (!confirm(`⚠️ Permanently delete pipeline "${name}"?\nThis cannot be undone!`)) return;
+    
+    try {
+        const res = await fetch(`${API}/api/auto/remove`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        const data = await res.json();
+        if (data.success) {
+            toast(`🗑️ ${data.message || 'Pipeline deleted'}`, 'success');
+            refreshAutoStatus();
+        } else {
+            toast(`❌ ${data.error || 'Delete failed'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Error: ${e.message}`, 'error');
+    }
+}
+
+// ============================================================
+// UPDATED: refreshAutoStatus with master status caching
+// ============================================================
+
 async function refreshAutoStatus() {
     try {
         const res = await fetch(`${API}/api/auto/status`);
@@ -1135,31 +1266,39 @@ async function refreshAutoStatus() {
         const enabledList = pipelines.filter(p => p.enabled);
         const on = !!(data.running && enabledList.length);
         
-        // ===== FETCH MASTER VAULT STATUS =====
+        // Store pipelines for toggle/delete functions
+        window._pipelines = pipelines;
+        
+        // ===== FETCH MASTER VAULT STATUS WITH FALLBACK =====
         let masterStatus = {};
         try {
             const masterRes = await fetch(`${API}/api/master/status`);
-            const masterData = await masterRes.json();
-            if (masterData.success) {
-                const niches = masterData.niches || [];
-                niches.forEach(n => {
-                    masterStatus[n.niche] = n.count || 0;
-                });
+            if (masterRes.ok) {
+                const masterData = await masterRes.json();
+                if (masterData.success) {
+                    const niches = masterData.niches || [];
+                    niches.forEach(n => {
+                        masterStatus[n.niche] = n.count || 0;
+                    });
+                }
+            } else {
+                console.warn('Master status endpoint returned:', masterRes.status);
             }
         } catch (e) {
-            console.warn('Master status fetch failed:', e);
+            console.warn('Master status fetch failed (endpoint may not exist yet):', e.message);
+            // Silently continue - master status is non-critical
         }
         
-        const banner = $('autoBanner');
-        const dot = $('autoDot');
-        const title = $('autoTitle');
-        const meta = $('autoMeta');
-        const header = $('headerAuto');
-        const headerDot = $('headerDot');
-        const headerLabel = $('headerAutoLabel');
-        const btn = $('autoToggleBtn');
-        const pipelineList = $('pipelineList');
-        const pipelinesCount = $('autoPipelinesCount');
+        const banner = document.getElementById('autoBanner');
+        const dot = document.getElementById('autoDot');
+        const title = document.getElementById('autoTitle');
+        const meta = document.getElementById('autoMeta');
+        const header = document.getElementById('headerAuto');
+        const headerDot = document.getElementById('headerDot');
+        const headerLabel = document.getElementById('headerAutoLabel');
+        const btn = document.getElementById('autoToggleBtn');
+        const pipelineList = document.getElementById('pipelineList');
+        const pipelinesCount = document.getElementById('autoPipelinesCount');
         
         if (banner) banner.classList.toggle('running', on);
         if (header) header.classList.toggle('on', on);
@@ -1189,7 +1328,7 @@ async function refreshAutoStatus() {
             meta.innerHTML = parts.join(' · ');
         }
         
-        // ===== UPDATED: PIPELINE LIST WITH MASTER FETCH BUTTONS =====
+        // ===== PIPELINE LIST WITH MASTER FETCH BUTTONS =====
         if (pipelineList) {
             if (!pipelines.length) {
                 pipelineList.innerHTML = '<div class="pipe-empty">No pipelines configured</div>';
@@ -1220,9 +1359,9 @@ async function refreshAutoStatus() {
                             <button onclick="masterFetchNiche('${escapeHtml(name)}')" title="Master Fetch (fill reserve)" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:2px 4px;">
                                 <i class="fas fa-download"></i>
                             </button>
-                            ${isOn ? `<button onclick="togglePipeline('${escapeHtml(name)}')" class="pause" title="Stop"><i class="fas fa-pause"></i></button>` :
-                                      `<button onclick="togglePipeline('${escapeHtml(name)}')" class="play" title="Start"><i class="fas fa-play"></i></button>`}
-                            <button onclick="deletePipeline('${escapeHtml(name)}')" class="delete" title="Delete"><i class="fas fa-trash"></i></button>
+                            ${isOn ? `<button onclick="togglePipeline('${escapeHtml(name)}')" class="pause" title="Stop" style="background:transparent;border:none;color:var(--warning);cursor:pointer;font-size:11px;padding:2px 4px;"><i class="fas fa-pause"></i></button>` :
+                                      `<button onclick="togglePipeline('${escapeHtml(name)}')" class="play" title="Start" style="background:transparent;border:none;color:var(--success);cursor:pointer;font-size:11px;padding:2px 4px;"><i class="fas fa-play"></i></button>`}
+                            <button onclick="deletePipeline('${escapeHtml(name)}')" class="delete" title="Delete" style="background:transparent;border:none;color:var(--error);cursor:pointer;font-size:11px;padding:2px 4px;"><i class="fas fa-trash"></i></button>
                         </div>
                     </div>`;
                 }).join('');
@@ -1235,9 +1374,11 @@ async function refreshAutoStatus() {
                 : '<i class="fas fa-robot"></i> Start auto';
         }
         window._autoRunning = on;
-    } catch (e) { console.warn('auto status refresh failed', e); }
+    } catch (e) { 
+        console.warn('auto status refresh failed', e);
+        // Don't let this break the UI
+    }
 }
-
 
 
 
