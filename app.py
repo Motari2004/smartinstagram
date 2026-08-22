@@ -1285,6 +1285,8 @@ def _get_bluesky_client_for_auto(cfg):
 
 def run_auto_once(name='default'):
     """One autonomous cycle: fetch from ALL sources in niche → vault → post."""
+    
+    # ===== STEP 1: Check Zernio keys =====
     key_status = ensure_zernio_keys_loaded(for_auto=True)
     if not key_status.get('success'):
         return {
@@ -1302,20 +1304,36 @@ def run_auto_once(name='default'):
     # Get ALL sources from this niche
     sources = cfg.get('source_handles') or []
     if not sources:
-        return {"success": False, "error": "No source handles configured"}
-
-    client, session_id = _get_bluesky_client_for_auto(cfg)
-    if not client or not session_id:
-        msg = "No Bluesky session. Login once in chat, or set bluesky_handle + app password in auto config."
+        msg = f"No source handles configured for '{name}'"
         _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
         return {"success": False, "error": msg}
+
+    # ===== STEP 2: SMART CLIENT - Auto-login with fallback =====
+    client, session_id = _get_bluesky_client_for_auto(cfg)
+    if not client or not session_id:
+        # Try to login with master account
+        if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
+            print(f"🔄 No session, auto-logging with master: @{BLUESKY_MASTER_HANDLE}")
+            login_result = tool_login(BLUESKY_MASTER_HANDLE, BLUESKY_MASTER_PASSWORD)
+            if login_result.get('success'):
+                session_id = login_result['session_id']
+                client = sessions[session_id]['client']
+                print(f"✅ Master login successful: @{BLUESKY_MASTER_HANDLE}")
+            else:
+                msg = f"Master login failed: {login_result.get('error')}"
+                _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
+                return {"success": False, "error": msg}
+        else:
+            msg = "No Bluesky session. Login once in chat, or set BLUESKY_MASTER_HANDLE in .env"
+            _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
+            return {"success": False, "error": msg}
 
     try:
         all_posts = []
         new_posts = []
         errors_per_source = {}
         
-        # Fetch from EACH source
+        # ===== STEP 3: Fetch from EACH source =====
         for source in sources:
             fetch = tool_fetch_posts(
                 session_id=session_id,
@@ -1337,7 +1355,7 @@ def run_auto_once(name='default'):
             _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
             return {"success": True, "posted_count": 0, "message": result_msg}
         
-        # Filter new posts (not seen before)
+        # ===== STEP 4: Filter new posts (not seen before) =====
         for p in all_posts:
             uri = p.get('uri')
             if not uri or _auto_seen(uri, name):
@@ -1351,18 +1369,20 @@ def run_auto_once(name='default'):
             _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
             return {"success": True, "posted_count": 0, "message": result_msg}
 
-        # Save to vault
+        # ===== STEP 5: Save to vault =====
         tool_add_to_vault(new_posts, handler_handle=name)
 
+        # ===== STEP 6: Resolve Instagram account =====
         account_id = resolve_instagram_account_id(cfg.get('account_id'), cfg.get('account_username'))
         account_username = cfg.get('account_username')
         content_type = cfg.get('content_type') or 'feed'
         
         if not account_id:
-            msg = f"Bad Instagram account on pipeline {name}: {cfg.get('account_id')} / {account_username}"
+            msg = f"❌ No valid Instagram account for pipeline '{name}': {cfg.get('account_id')} / {account_username}"
             _save_auto_config({**cfg, 'last_error': msg, 'last_run_at': datetime.now()})
-            return {"success": False, "error": msg}
+            return {"success": False, "error": msg, "fix": f"auto setup name={name} account_username=easternfrontdaily"}
         
+        # ===== STEP 7: Post to Instagram =====
         posted = 0
         errors = []
         for p in new_posts:
@@ -1379,6 +1399,7 @@ def run_auto_once(name='default'):
                 errors.append(r.get('error'))
             time.sleep(1.5)
 
+        # ===== STEP 8: Save results =====
         result_msg = f"Auto: posted {posted}/{len(new_posts)} from {len(sources)} sources in '{name}'"
         _save_auto_config({
             **cfg,
@@ -1396,11 +1417,29 @@ def run_auto_once(name='default'):
             "errors": errors_per_source,
             "message": result_msg
         }
+        
     except Exception as e:
         traceback.print_exc()
-        _save_auto_config({**cfg, 'last_error': str(e), 'last_run_at': datetime.now()})
-        return {"success": False, "error": str(e)}
-
+        error_msg = str(e)
+        
+        # ===== SMART ERROR HANDLING =====
+        # Check if it's a known error and provide fix
+        if "resolve_instagram_account_id" in error_msg or "account_id" in error_msg:
+            fix_msg = f"Fix: auto setup name={name} account_username=easternfrontdaily"
+        elif "source" in error_msg.lower():
+            fix_msg = f"Fix: auto setup name={name} source_handles=['source.bsky.social'] account_username=easternfrontdaily"
+        elif "session" in error_msg.lower() or "login" in error_msg.lower():
+            fix_msg = "Fix: Set BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD in .env"
+        else:
+            fix_msg = "Check logs for details"
+        
+        _save_auto_config({**cfg, 'last_error': f"{error_msg} | {fix_msg}", 'last_run_at': datetime.now()})
+        return {
+            "success": False, 
+            "error": error_msg,
+            "fix": fix_msg,
+            "message": f"❌ {error_msg} | {fix_msg}"
+        }
 
     print("🤖 Auto pilot loop stopped")
 
@@ -3078,6 +3117,7 @@ def tool_restore_session(handle: str) -> dict:
         if not row:
             return {"success": False, "error": "No valid session found. Please login again."}
 
+        # Unpack all columns correctly (7 columns)
         session_id, username, handle, display_name, avatar, session_string, expires_at = row
         client = Client()
         client.login(session_string=session_string)
