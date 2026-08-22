@@ -29,7 +29,17 @@ from psycopg2.extras import Json, RealDictCursor
 load_dotenv()
 
 
+# ============================================================
+# MASTER BLUESKY ACCOUNT (for auto fetching)
+# ============================================================
 
+BLUESKY_MASTER_HANDLE = os.environ.get('BLUESKY_MASTER_HANDLE')
+BLUESKY_MASTER_PASSWORD = os.environ.get('BLUESKY_MASTER_PASSWORD')
+
+if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
+    print(f"✅ Master Bluesky account loaded: @{BLUESKY_MASTER_HANDLE}")
+else:
+    print("⚠️ No master Bluesky account in .env — auto fetching will fail")
 
 
 
@@ -1216,33 +1226,44 @@ def _auto_mark_seen(uri, posted=False, config_name='default'):
 
 
 def _get_bluesky_client_for_auto(cfg):
-    """Prefer live session, else login with stored app password, else restore from DB."""
+    """Get Bluesky client using MASTER account from .env (no manual login needed)."""
+    
     # 1) any in-memory session
     for sid, s in sessions.items():
         if s.get('client'):
             return s['client'], sid
 
-    # 2) restore latest DB session (prefer login handle, then any valid session)
-    login_handle = cfg.get('bluesky_handle')
+    # 2) LOGIN WITH MASTER ACCOUNT FROM .env
+    if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
+        try:
+            client = Client()
+            client.login(BLUESKY_MASTER_HANDLE, BLUESKY_MASTER_PASSWORD)
+            session_id = f"master_{int(datetime.now().timestamp())}"
+            session_string = client.export_session_string()
+            
+            # Store in sessions
+            sessions[session_id] = {
+                'client': client,
+                'handle': BLUESKY_MASTER_HANDLE,
+                'session_string': session_string
+            }
+            
+            print(f"✅ Auto logged in as master: @{BLUESKY_MASTER_HANDLE}")
+            return client, session_id
+        except Exception as e:
+            print(f"❌ Master login failed: {e}")
+    
+    # 3) restore latest DB session (fallback)
     try:
         conn = get_db_connection()
         if conn:
             cur = conn.cursor()
-            row = None
-            if login_handle:
-                cur.execute('''
-                    SELECT session_id, session_string, handle FROM sessions
-                    WHERE handle = %s AND expires_at > CURRENT_TIMESTAMP
-                    ORDER BY last_used_at DESC LIMIT 1
-                ''', (login_handle,))
-                row = cur.fetchone()
-            if not row:
-                cur.execute('''
-                    SELECT session_id, session_string, handle FROM sessions
-                    WHERE expires_at > CURRENT_TIMESTAMP
-                    ORDER BY last_used_at DESC LIMIT 1
-                ''')
-                row = cur.fetchone()
+            cur.execute('''
+                SELECT session_id, session_string, handle FROM sessions
+                WHERE expires_at > CURRENT_TIMESTAMP
+                ORDER BY last_used_at DESC LIMIT 1
+            ''')
+            row = cur.fetchone()
             cur.close()
             conn.close()
             if row:
@@ -1258,16 +1279,6 @@ def _get_bluesky_client_for_auto(cfg):
                 return client, sid
     except Exception as e:
         print(f"auto restore session: {e}")
-        traceback.print_exc()
-
-    # 3) login with stored credentials
-    bsky_user = cfg.get('bluesky_handle')
-    bsky_pass = cfg.get('bluesky_app_password')
-    if bsky_user and bsky_pass:
-        result = tool_login(bsky_user, bsky_pass)
-        if result.get('success'):
-            sid = result['session_id']
-            return sessions[sid]['client'], sid
 
     return None, None
 
@@ -2918,43 +2929,133 @@ def is_repost(post):
 # TOOL FUNCTIONS (called by the AI)
 # ============================================================
 
-def tool_login(username: str, password: str) -> dict:
-    """Login to Bluesky and create a persistent session."""
+def tool_login(username: str = None, password: str = None) -> dict:
+    """
+    Smart login: 
+    1. If credentials provided, try them first
+    2. If they fail, auto-fallback to master account from .env
+    3. If no credentials provided, use master account
+    """
     try:
-        client = Client()
-        client.login(username, password)
-        profile = client.get_profile(username)
-        session_id = f"{username}_{int(datetime.now().timestamp())}"
-        session_string = client.export_session_string()
-        expires_at = datetime.now() + timedelta(days=30)
+        attempted_username = username
+        attempted_password = password
+        
+        # If no credentials provided, use master from .env
+        if not username or not password:
+            if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
+                username = BLUESKY_MASTER_HANDLE
+                password = BLUESKY_MASTER_PASSWORD
+                print(f"🔑 Using master account: @{username}")
+            else:
+                return {"success": False, "error": "No credentials provided and no master account in .env"}
+        
+        # Try to login with provided credentials
+        try:
+            client = Client()
+            client.login(username, password)
+            profile = client.get_profile(username)
+            session_id = f"{username}_{int(datetime.now().timestamp())}"
+            session_string = client.export_session_string()
+            expires_at = datetime.now() + timedelta(days=30)
 
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute('DELETE FROM sessions WHERE handle = %s', (profile.handle,))
-            cur.execute('''
-                INSERT INTO sessions (session_id, username, handle, display_name, avatar, session_string, expires_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (session_id, username, profile.handle, profile.display_name or username, profile.avatar, session_string, expires_at))
-            conn.commit()
-            cur.close()
-            conn.close()
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute('DELETE FROM sessions WHERE handle = %s', (profile.handle,))
+                cur.execute('''
+                    INSERT INTO sessions (session_id, username, handle, display_name, avatar, session_string, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (session_id, username, profile.handle, profile.display_name or username, profile.avatar, session_string, expires_at))
+                conn.commit()
+                cur.close()
+                conn.close()
 
-        sessions[session_id] = {
-            'client': client,
-            'username': username,
-            'handle': profile.handle,
-            'display_name': profile.display_name or username,
-            'avatar': profile.avatar,
-            'session_string': session_string
-        }
-        return {
-            "success": True,
-            "session_id": session_id,
-            "handle": profile.handle,
-            "display_name": profile.display_name or username,
-            "message": f"Logged in as @{profile.handle}"
-        }
+            sessions[session_id] = {
+                'client': client,
+                'username': username,
+                'handle': profile.handle,
+                'display_name': profile.display_name or username,
+                'avatar': profile.avatar,
+                'session_string': session_string
+            }
+            
+            # Check if this was a fallback or manual login
+            is_master = (username == BLUESKY_MASTER_HANDLE)
+            if attempted_username and attempted_username != BLUESKY_MASTER_HANDLE and not is_master:
+                print(f"✅ Manual login successful: @{profile.handle}")
+                return {
+                    "success": True,
+                    "session_id": session_id,
+                    "handle": profile.handle,
+                    "display_name": profile.display_name or username,
+                    "message": f"✅ Logged in as @{profile.handle}"
+                }
+            else:
+                return {
+                    "success": True,
+                    "session_id": session_id,
+                    "handle": profile.handle,
+                    "display_name": profile.display_name or username,
+                    "message": f"✅ Logged in as @{profile.handle} (using master account from .env)"
+                }
+                
+        except Exception as login_error:
+            # ===== SMART FALLBACK: If login fails, try master account =====
+            print(f"⚠️ Login failed for '{username}': {login_error}")
+            
+            # If we already tried the master account and it failed, return error
+            if username == BLUESKY_MASTER_HANDLE:
+                return {"success": False, "error": f"Master login failed: {str(login_error)}"}
+            
+            # If master account exists, try it as fallback
+            if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
+                print(f"🔄 Auto-fallback to master account: @{BLUESKY_MASTER_HANDLE}")
+                try:
+                    client = Client()
+                    client.login(BLUESKY_MASTER_HANDLE, BLUESKY_MASTER_PASSWORD)
+                    profile = client.get_profile(BLUESKY_MASTER_HANDLE)
+                    session_id = f"master_{int(datetime.now().timestamp())}"
+                    session_string = client.export_session_string()
+                    expires_at = datetime.now() + timedelta(days=30)
+
+                    conn = get_db_connection()
+                    if conn:
+                        cur = conn.cursor()
+                        cur.execute('DELETE FROM sessions WHERE handle = %s', (profile.handle,))
+                        cur.execute('''
+                            INSERT INTO sessions (session_id, username, handle, display_name, avatar, session_string, expires_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ''', (session_id, BLUESKY_MASTER_HANDLE, profile.handle, profile.display_name or BLUESKY_MASTER_HANDLE, profile.avatar, session_string, expires_at))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+
+                    sessions[session_id] = {
+                        'client': client,
+                        'username': BLUESKY_MASTER_HANDLE,
+                        'handle': profile.handle,
+                        'display_name': profile.display_name or BLUESKY_MASTER_HANDLE,
+                        'avatar': profile.avatar,
+                        'session_string': session_string
+                    }
+                    
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "handle": profile.handle,
+                        "display_name": profile.display_name or BLUESKY_MASTER_HANDLE,
+                        "message": f"⚠️ '{username}' login failed, but auto-logged in as master: @{profile.handle}",
+                        "fallback_used": True,
+                        "original_error": str(login_error)
+                    }
+                except Exception as master_error:
+                    return {
+                        "success": False, 
+                        "error": f"Manual login failed: {str(login_error)}. Master fallback also failed: {str(master_error)}"
+                    }
+            else:
+                return {"success": False, "error": f"Login failed: {str(login_error)}. No master account configured for fallback."}
+                
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -4750,21 +4851,27 @@ TOOL_MAP = {
 
 # OpenAI-compatible tool schemas (works with Gemini OpenAI endpoint)
 TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "login",
-            "description": "Login to Bluesky with username/handle and app password. Creates a persistent session.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "username": {"type": "string", "description": "Bluesky handle or email"},
-                    "password": {"type": "string", "description": "App password"}
+{
+    "type": "function",
+    "function": {
+        "name": "login",
+        "description": "Login to Bluesky with username/handle and app password. ONLY use this when the user EXPLICITLY provides credentials. The master account from .env is used automatically for fetching.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string", 
+                    "description": "Bluesky handle (ONLY if user explicitly provided it)"
                 },
-                "required": ["username", "password"]
-            }
+                "password": {
+                    "type": "string", 
+                    "description": "App password (ONLY if user explicitly provided it)"
+                }
+            },
+            "required": []  # ← MAKE IT OPTIONAL (not required)
         }
-    },
+    }
+},
     {
         "type": "function",
         "function": {
@@ -5204,8 +5311,6 @@ TOOLS_SCHEMA = [
 
 
 
-
-
 SYSTEM_PROMPT = """You are the AI assistant for Bluesky AI Vault - a social media automation tool.
 
 ===========================================
@@ -5224,46 +5329,92 @@ The system uses an EXTERNAL cron service (cron-job.org) to trigger posting every
 - ✅ cron-job.org handles ALL scheduling externally
 - ✅ Pipelines are enabled/disabled in the database
 - ✅ Cron state (ENABLED/DISABLED) is stored in the database
+- ✅ Master Bluesky account in .env handles ALL fetching automatically
 
 ===========================================
-NICHES & MULTI-SOURCE PIPELINES (NEW!):
+BLUESKY MASTER ACCOUNT vs SOURCE HANDLES (CRITICAL):
 ===========================================
-A "niche" is a content category (e.g., "Motivational Quotes", "Humor", "Explore").
+⚠️ DO NOT CONFUSE THESE TWO!
+
+🔑 **Master Account** (BLUESKY_MASTER_HANDLE in .env): 
+   → The account USED TO FETCH posts
+   → This is YOUR bot account (e.g., smartmaster010.bsky.social)
+   → Already configured in .env - NO need to login manually
+   → NEVER ask the user to login with this in chat
+
+📡 **Source Handle**:
+   → The account TO FETCH FROM (e.g., go4know.com, motivationagency.bsky.social)
+   → This is the source of content
+   → Different from the master account!
+   → Passed as "actor" parameter in fetch_posts
+
+✅ CORRECT: fetch 10 posts from go4know.com
+   → Uses master account (smartmaster010.bsky.social) to fetch FROM go4know.com
+
+❌ WRONG: login with go4know.com
+   → go4know.com is NOT a valid Bluesky login handle
+   → The master account (smartmaster010.bsky.social) should be used for login
+
+===========================================
+WHEN TO USE LOGIN:
+===========================================
+- ONLY use login when the user explicitly provides credentials
+- If user says "login with myhandle.bsky.social and password"
+- Otherwise, the master account from .env is used automatically
+- NEVER invent a login for go4know.com or any source handle
+- NEVER ask the user for master account credentials (it's in .env)
+
+===========================================
+NICHES & MULTI-SOURCE PIPELINES (SMART APPROACH):
+===========================================
+A "niche" is a content category (e.g., "Motivational Quotes", "Humor").
 Each niche has ONE pipeline that fetches from MULTIPLE Bluesky sources.
 
-NICHE MANAGEMENT COMMANDS:
-- "auto setup niche=[name] source_handles=[list] account_username=[dest] enabled=true"
-  → Creates a new niche with multiple sources
-  → Example: auto setup niche="humor" source_handles=["kackbro.bsky.social", "miaganga.bsky.social"] account_username=serpent_sniper1 enabled=true
+🎯 KEY CONCEPT: One pipeline = Multiple sources = One destination Instagram account
 
-- "add [source_handle] to [niche]"
-  → Adds a source to an existing niche
-  → Example: add rebelrouser1962.bsky.social to humor
+⚠️ CRITICAL RULES:
+1. The `add source` command is BROKEN - DO NOT USE IT
+2. ALWAYS use `auto setup` with the FULL source list
+3. `auto setup` MERGES sources (keeps existing + adds new ones)
+4. To add a new source, include ALL existing sources + the new one
 
-- "remove [source_handle] from [niche]"
-  → Removes a source from a niche
-  → Example: remove astrobin.com from explore
+✅ SMART WAY TO ADD A SOURCE:
+auto setup name=MotivationalQuotes source_handles=["quoteoftheday.bsky.social","motivationagency.bsky.social","NEW_SOURCE_HERE"] account_username=easternfrontdaily enabled=true
 
-- "list sources in [niche]"
-  → Shows all sources in a niche
-  → Example: list sources in motivational quotes
+❌ BROKEN WAY (DO NOT USE):
+add motivationagency.bsky.social to MotivationalQuotes
 
-- "list niches"
-  → Shows all niches with their sources and status
+📋 BEST PRACTICE WORKFLOW:
+Step 1: Check current sources → list sources in [pipeline]
+Step 2: Copy all existing sources from the list
+Step 3: Add your new source to the list
+Step 4: Run auto setup with the COMPLETE list
+
+🎯 EXAMPLE: Adding a third source to MotivationalQuotes
+Current sources: ["quoteoftheday.bsky.social", "motivationagency.bsky.social"]
+New source to add: "dailyinspiration.bsky.social"
+
+CORRECT COMMAND:
+auto setup name=MotivationalQuotes source_handles=["quoteoftheday.bsky.social","motivationagency.bsky.social","dailyinspiration.bsky.social"] account_username=easternfrontdaily enabled=true
 
 HOW MULTI-SOURCE PIPELINES WORK:
 1. One pipeline = One niche = Multiple sources
 2. Each run fetches from ALL sources in the niche
-3. Posts up to max_posts_per_run (default: 2) total from all sources combined
+3. Posts up to max_posts_per_run (default: 2) total from all sources
 4. Deduplication prevents posting the same post twice
+5. Posts are distributed across sources (fair rotation)
 
-EXAMPLE:
-Niche: "motivational quotes"
-Sources: ["motivationagency.bsky.social", "quoteoftheday.bsky.social", "dailyinspiration.bsky.social"]
-Destination: serpent_sniper1
-→ Fetches 4 posts from EACH source (total 12)
-→ Finds up to 2 NEW posts across all sources
-→ Posts them to Instagram
+NICHE MANAGEMENT COMMANDS (USE THESE):
+- "auto setup name=[name] source_handles=[list] account_username=[dest] enabled=true"
+  → Creates/updates a pipeline with multiple sources
+  → Example: auto setup name="humor" source_handles=["kackbro.bsky.social","miaganga.bsky.social"] account_username=serpent_sniper1 enabled=true
+
+- "list sources in [pipeline]" → Shows all sources in a pipeline
+- "list niches" → Shows all niches with sources and status
+- "remove pipeline [name]" → Permanently deletes a pipeline
+
+⚠️ IMPORTANT: The "add source" and "remove source" commands are BROKEN.
+Always use auto_setup with the full source list instead!
 
 ===========================================
 CRITICAL - HANDLING TOOL RESPONSES:
@@ -5375,17 +5526,13 @@ You: "🗑️ Permanently deleted 41 item(s) from vault"
 User: "create a niche for humor with kackbro.bsky.social and miaganga.bsky.social to serpent_sniper1"
 You: "✅ Pipeline 'humor' saved · 2 sources · enabled=True → serpent_sniper1"
 
-User: "add rebelrouser1962.bsky.social to humor"
-You: "✅ Added 'rebelrouser1962.bsky.social' to 'humor' pipeline (3 total sources)"
+User: "add dailyinspiration.bsky.social to MotivationalQuotes"
+(Current sources: quoteoftheday.bsky.social, motivationagency.bsky.social)
+You: "I'll add that source. To keep all sources, I'll run:
+auto setup name=MotivationalQuotes source_handles=['quoteoftheday.bsky.social','motivationagency.bsky.social','dailyinspiration.bsky.social'] account_username=easternfrontdaily enabled=true"
 
-User: "list sources in humor"
-You: "📋 Sources in 'humor' (humor)
-   Status: 🟢 ENABLED
-   Destination: serpent_sniper1
-   Total: 3 source(s)
-   1. kackbro.bsky.social
-   2. miaganga.bsky.social
-   3. rebelrouser1962.bsky.social"
+User: "fetch 10 posts from go4know.com"
+You: "✅ Fetching posts from go4know.com using the master account..."
 
 ===========================================
 PIPELINE CONTROL COMMANDS:
@@ -5417,6 +5564,15 @@ OTHER COMMANDS:
 - "list scheduled" → list_scheduled()
 
 ===========================================
+SMART PIPELINE MANAGEMENT RULES:
+===========================================
+1. When user asks to "add" a source → ALWAYS use auto_setup with FULL list
+2. When adding a source → FIRST list current sources, then include ALL
+3. Never use the "add source" command (it's broken)
+4. Always verify with "list sources in [pipeline]" after adding
+5. If a pipeline has no destination → set it first with auto_setup
+
+===========================================
 REMEMBER:
 ===========================================
 - Timezone is Africa/Nairobi
@@ -5429,8 +5585,12 @@ REMEMBER:
 - The cron interval is controlled by cron-job.org, NOT internal threads
 - "poll_interval_sec" is removed/ignored (it was for dead Vercel threads)
 - One pipeline = one niche = multiple sources
-- Each niche can have many Bluesky sources feeding into one Instagram account"""
-
+- Each niche can have many Bluesky sources feeding into one Instagram account
+- The "add source" and "remove source" commands are BROKEN — always use auto_setup with full source list!
+- When adding sources, ALWAYS include ALL existing sources in the list
+- Check current sources first with "list sources in [pipeline]" before adding
+- Master Bluesky account handles ALL fetching automatically from .env
+- NEVER try to login with a source handle (like go4know.com) — use the master account"""
 
 
 
@@ -5523,10 +5683,25 @@ def execute_tool(name, arguments, session_id=None):
             return fn(arguments.get('handle'))
         
         if name == 'fetch_posts':
+            # If no session_id provided, try to get from arguments
             if not session_id and arguments.get('session_id'):
                 session_id = arguments.get('session_id')
+            
+            # If still no session, try to create one with master account
             if not session_id:
-                return {"success": False, "error": "Login first"}
+                if BLUESKY_MASTER_HANDLE and BLUESKY_MASTER_PASSWORD:
+                    result = tool_login(BLUESKY_MASTER_HANDLE, BLUESKY_MASTER_PASSWORD)
+                    if result.get('success'):
+                        session_id = result['session_id']
+                        print(f"✅ Auto-logged in with master account for fetch")
+                    else:
+                        return {"success": False, "error": f"Master login failed: {result.get('error')}"}
+                else:
+                    return {"success": False, "error": "No session_id provided and no master account in .env"}
+            
+            if not session_id:
+                return {"success": False, "error": "Login first or set BLUESKY_MASTER_HANDLE in .env"}
+            
             return fn(
                 session_id,
                 arguments.get('actor'),
