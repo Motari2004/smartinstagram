@@ -1477,9 +1477,8 @@ def run_auto_once(name='default'):
 
 def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dict:
     """
-    'Master fetch' — pulls NEW posts from ALL sources in a niche pipeline,
-    paginating each source until it finds `limit_per_source` genuinely new
-    posts (not already in that niche's vault), or the feed runs out.
+    'Master fetch' — pulls NEW posts from ALL sources in a niche pipeline.
+    Uses the same reliable fetch mechanism as manual fetch_posts.
     Does NOT post anything. Pure reserve-building.
     """
     if not name:
@@ -1504,7 +1503,7 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
     if not client or not session_id:
         return {"success": False, "error": "Could not get a Bluesky session for fetching"}
 
-    # Dedup against everything already saved for this pipeline
+    # Get existing URIs for dedup
     existing_uris = _get_existing_vault_uris(resolved)
     print(f"📚 Pipeline '{resolved}' already has {len(existing_uris)} posts saved — will skip these")
 
@@ -1513,36 +1512,47 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
     errors = {}
 
     for source in sources:
-        result = fetch_new_posts_smart(
+        print(f"🔍 Fetching from {source}...")
+        
+        # ===== USE THE RELIABLE tool_fetch_posts =====
+        fetch_result = tool_fetch_posts(
             session_id=session_id,
             actor=source,
-            target_new=limit_per_source,
-            existing_uris=existing_uris,
-            media_only=bool(cfg.get('media_only', True)),
-            include_reposts=bool(cfg.get('include_reposts')),
-            max_pages=15
+            limit=limit_per_source * 2,  # Fetch extra to account for duplicates
+            include_reposts=bool(cfg.get('include_reposts', False)),
+            media_only=bool(cfg.get('media_only', True))
         )
-        if not result.get('success'):
-            errors[source] = result.get('error')
+        
+        if not fetch_result.get('success'):
+            errors[source] = fetch_result.get('error', 'Unknown error')
+            print(f"❌ Failed to fetch from {source}: {errors[source]}")
             continue
-
-        new_posts = result.get('new_posts') or []
-        all_new.extend(new_posts)
+        
+        posts = fetch_result.get('posts', [])
+        print(f"📥 Fetched {len(posts)} posts from {source}")
+        
+        # Filter out posts that are already in the vault
+        new_posts = []
+        for post in posts:
+            uri = post.get('uri')
+            if uri and uri not in existing_uris:
+                new_posts.append(post)
+                existing_uris.add(uri)  # Add to set to prevent duplicates within this run
+        
+        print(f"📊 Found {len(new_posts)} NEW posts from {source} (skipped {len(posts) - len(new_posts)} existing)")
+        
         per_source[source] = {
+            "fetched": len(posts),
             "new_found": len(new_posts),
-            "pages_scanned": result.get('pages_used'),
-            "exhausted_feed": result.get('exhausted'),
-            "reached_target": result.get('reached_target')
+            "skipped": len(posts) - len(new_posts)
         }
-        # Add this source's new URIs to the dedup set so a later source
-        # in the same run can't grab the same post twice (rare cross-posts)
-        existing_uris.update(p['uri'] for p in new_posts)
-
-        print(
-            f"📥 {source}: found {len(new_posts)} NEW post(s) "
-            f"({result.get('pages_used')} page(s) scanned, "
-            f"{'reached target' if result.get('reached_target') else 'feed exhausted' if result.get('exhausted') else 'stopped early'})"
-        )
+        
+        all_new.extend(new_posts)
+        
+        # If we've reached the target, stop fetching more sources
+        if len(all_new) >= limit_per_source:
+            print(f"🎯 Reached target of {limit_per_source} total posts, stopping")
+            break
 
     if not all_new:
         result_msg = (
@@ -1552,12 +1562,14 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
         return {
             "success": True,
             "fetched_count": 0,
+            "saved_count": 0,
             "sources": sources,
             "per_source": per_source,
-            "errors": errors,
+            "errors": errors if errors else None,
             "message": result_msg
         }
 
+    # ===== SAVE USING THE SAME MECHANISM =====
     save_result = tool_add_to_vault(all_new, handler_handle=resolved)
     saved = save_result.get('saved', 0) if save_result.get('success') else 0
 
