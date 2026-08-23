@@ -1138,7 +1138,7 @@ async function masterFetchNiche(nicheName) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 name: nicheName,
-                limit_per_source: 10
+                limit_per_source: 20
             })
         });
         const data = await res.json();
