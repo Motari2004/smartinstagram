@@ -1159,7 +1159,7 @@ async function masterFetchAll() {
         const res = await fetch(`${API}/api/niche/master-fetch-all`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ limit_per_source: 10 })
+            body: JSON.stringify({ limit_per_source: 20 })
         });
         const data = await res.json();
         if (data.success) {
