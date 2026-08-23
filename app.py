@@ -4330,15 +4330,16 @@ def tool_post_now(
                 return {"success": False, "error": "Database unavailable"}
             cur = conn.cursor()
             if vault_id:
-                cur.execute("SELECT id, uri, text, images, author FROM vault WHERE id = %s", (int(vault_id),))
+                cur.execute("SELECT id, uri, text, images, author, display_name FROM vault WHERE id = %s", (int(vault_id),))
             else:
-                cur.execute("SELECT id, uri, text, images, author FROM vault WHERE uri = %s", (uri,))
+                cur.execute("SELECT id, uri, text, images, author, display_name FROM vault WHERE uri = %s", (uri,))
             row = cur.fetchone()
             cur.close()
             conn.close()
             if not row:
                 return {"success": False, "error": f"Vault post not found (id={vault_id}, uri={uri})"}
-            vault_id, uri, text, images, author = row
+            
+            vault_id, uri, text, images, author, display_name = row
             
             # Check if already posted
             already_posted = []
@@ -4352,8 +4353,27 @@ def tool_post_now(
                 image_url = images[0].get('url') if isinstance(images[0], dict) else None
             if not image_url:
                 return {"success": False, "error": "No image on this vault post"}
+            
+            # ===== IMPROVED CAPTION LOGIC =====
             if not caption:
-                caption = f"{(text or '')[:200]}" if text else f"Post from @{author}"
+                # 1. Use post text if available
+                if text and text.strip():
+                    caption = text[:200]
+                    if len(text) > 200:
+                        caption += "..."
+                else:
+                    # 2. Use Instagram account name (the account we're posting to)
+                    if account_username:
+                        # Clean up the Instagram username
+                        insta_name = account_username.replace('ig_', '').lstrip('@').strip()
+                        caption = f"From @{insta_name}"
+                    else:
+                        # 3. Fallback to Bluesky display name
+                        if display_name and display_name.strip():
+                            caption = f"From {display_name}"
+                        else:
+                            # 4. Final fallback
+                            caption = f"From @{author}"
 
         if not image_url:
             return {"success": False, "error": "Provide vault_id, uri, or image_url"}
@@ -4504,7 +4524,6 @@ def tool_post_now(
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e), "message": f"Post failed: {e}"}
-
 
 
 
