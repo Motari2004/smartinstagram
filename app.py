@@ -2736,7 +2736,7 @@ def post_to_bluesky_direct(image_url, caption):
 
 
 
-def post_to_zernio_multi_platform(image_url, caption, platforms, scheduled_time=None, content_type='feed', account_username=None):
+def post_to_zernio_multi_platform(image_url, caption, platforms, scheduled_time=None, content_type='feed', account_username=None, account_id=None):
     """
     Post to Zernio platforms using the correct API key for the account.
     """
@@ -2751,8 +2751,32 @@ def post_to_zernio_multi_platform(image_url, caption, platforms, scheduled_time=
     
     try:
         # Get account info from DB
+        # Get account info from DB — try account_id FIRST (exact, unambiguous)
         account_info = None
-        if account_username:
+        if account_id and _looks_like_zernio_id(account_id):
+            try:
+                conn = get_db_connection()
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT account_id, api_key, api_key_index FROM zernio_accounts 
+                        WHERE account_id = %s AND platform = %s AND is_active = TRUE
+                        LIMIT 1
+                    """, (account_id, platforms[0]))
+                    row = cur.fetchone()
+                    cur.close()
+                    conn.close()
+                    if row:
+                        account_info = {
+                            "account_id": row[0],
+                            "api_key": row[1],
+                            "api_key_index": row[2]
+                        }
+            except Exception as e:
+                print(f"DB lookup error (by account_id): {e}")
+
+        # Fall back to username lookup only if account_id didn't resolve
+        if not account_info and account_username:
             try:
                 conn = get_db_connection()
                 if conn:
@@ -2772,16 +2796,16 @@ def post_to_zernio_multi_platform(image_url, caption, platforms, scheduled_time=
                             "api_key_index": row[2]
                         }
             except Exception as e:
-                print(f"DB lookup error: {e}")
+                print(f"DB lookup error (by username): {e}")
         
-        # If not found, try to resolve from Zernio
-        if not account_info:
+        # Last resort: query Zernio live
+        if not account_info and account_username:
             result = resolve_zernio_account(account_username, platforms[0])
             if result:
                 account_info = result
         
         if not account_info:
-            return {"success": False, "error": f"Could not resolve account: {account_username}"}
+            return {"success": False, "error": f"Could not resolve account: id={account_id} username={account_username}"}
         
         account_id = account_info['account_id']
         api_key = account_info['api_key']
@@ -4031,7 +4055,8 @@ def tool_post_now(
                 platforms=zernio_to_post,
                 scheduled_time=None,
                 content_type=content_type,
-                account_username=account_username
+                account_username=account_username,
+                account_id=account_id
             )
 
             if zernio_result.get('success'):
