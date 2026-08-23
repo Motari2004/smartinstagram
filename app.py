@@ -1477,8 +1477,9 @@ def run_auto_once(name='default'):
 
 def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dict:
     """
-    'Master fetch' — pulls fresh posts from ALL sources in a niche pipeline
-    and saves them to that niche's vault (handler_handle = pipeline name).
+    'Master fetch' — pulls NEW posts from ALL sources in a niche pipeline,
+    paginating each source until it finds `limit_per_source` genuinely new
+    posts (not already in that niche's vault), or the feed runs out.
     Does NOT post anything. Pure reserve-building.
     """
     if not name:
@@ -1503,27 +1504,51 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
     if not client or not session_id:
         return {"success": False, "error": "Could not get a Bluesky session for fetching"}
 
-    all_fetched = []
+    # Dedup against everything already saved for this pipeline
+    existing_uris = _get_existing_vault_uris(resolved)
+    print(f"📚 Pipeline '{resolved}' already has {len(existing_uris)} posts saved — will skip these")
+
+    all_new = []
     per_source = {}
     errors = {}
 
     for source in sources:
-        fetch = tool_fetch_posts(
+        result = fetch_new_posts_smart(
             session_id=session_id,
             actor=source,
-            limit=limit_per_source,
+            target_new=limit_per_source,
+            existing_uris=existing_uris,
+            media_only=bool(cfg.get('media_only', True)),
             include_reposts=bool(cfg.get('include_reposts')),
-            media_only=bool(cfg.get('media_only', True))
+            max_pages=15
         )
-        if not fetch.get('success'):
-            errors[source] = fetch.get('error')
+        if not result.get('success'):
+            errors[source] = result.get('error')
             continue
-        posts = fetch.get('posts') or []
-        all_fetched.extend(posts)
-        per_source[source] = len(posts)
 
-    if not all_fetched:
-        result_msg = f"Master fetch for '{resolved}': nothing new found across {len(sources)} source(s)"
+        new_posts = result.get('new_posts') or []
+        all_new.extend(new_posts)
+        per_source[source] = {
+            "new_found": len(new_posts),
+            "pages_scanned": result.get('pages_used'),
+            "exhausted_feed": result.get('exhausted'),
+            "reached_target": result.get('reached_target')
+        }
+        # Add this source's new URIs to the dedup set so a later source
+        # in the same run can't grab the same post twice (rare cross-posts)
+        existing_uris.update(p['uri'] for p in new_posts)
+
+        print(
+            f"📥 {source}: found {len(new_posts)} NEW post(s) "
+            f"({result.get('pages_used')} page(s) scanned, "
+            f"{'reached target' if result.get('reached_target') else 'feed exhausted' if result.get('exhausted') else 'stopped early'})"
+        )
+
+    if not all_new:
+        result_msg = (
+            f"Master fetch for '{resolved}': no NEW posts found across {len(sources)} source(s) "
+            f"— all recent posts are already in the vault"
+        )
         return {
             "success": True,
             "fetched_count": 0,
@@ -1533,18 +1558,18 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
             "message": result_msg
         }
 
-    save_result = tool_add_to_vault(all_fetched, handler_handle=resolved)
+    save_result = tool_add_to_vault(all_new, handler_handle=resolved)
     saved = save_result.get('saved', 0) if save_result.get('success') else 0
 
     result_msg = (
-        f"✅ Master fetch for '{resolved}': saved {saved} post(s) to vault "
-        f"from {len(sources)} source(s)"
+        f"✅ Master fetch for '{resolved}': found {len(all_new)} NEW post(s), "
+        f"saved {saved} to vault, from {len(sources)} source(s)"
     )
     print(f"🗃️ {result_msg}")
 
     return {
         "success": True,
-        "fetched_count": len(all_fetched),
+        "fetched_count": len(all_new),
         "saved_count": saved,
         "sources": sources,
         "per_source": per_source,
@@ -3370,6 +3395,120 @@ def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_repos
         print(f"❌ Error fetching posts: {e}")
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+
+
+
+def _get_existing_vault_uris(handler_handle: str) -> set:
+    """Get all URIs already saved in this pipeline's vault, for dedup."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return set()
+        cur = conn.cursor()
+        cur.execute("SELECT uri FROM vault WHERE handler_handle = %s", (handler_handle,))
+        uris = {r[0] for r in cur.fetchall()}
+        cur.close()
+        conn.close()
+        return uris
+    except Exception as e:
+        print(f"_get_existing_vault_uris: {e}")
+        return set()
+
+
+def fetch_new_posts_smart(
+    session_id: str,
+    actor: str,
+    target_new: int,
+    existing_uris: set,
+    media_only: bool = True,
+    include_reposts: bool = False,
+    max_pages: int = 15
+) -> dict:
+    """
+    Paginate through a Bluesky account's feed, collecting only posts
+    NOT already in existing_uris, until target_new is reached or the
+    feed / max_pages is exhausted. Smarter than a single fixed-limit fetch.
+    """
+    if not session_id or session_id not in sessions:
+        return {"success": False, "error": "Not logged in", "new_posts": [], "pages_used": 0}
+
+    client = sessions[session_id]['client']
+    new_posts = []
+    cursor = None
+    pages_used = 0
+    seen_this_run = set()
+
+    filter_type = 'posts_with_media' if media_only else 'posts_no_replies'
+
+    while len(new_posts) < target_new and pages_used < max_pages:
+        pages_used += 1
+        try:
+            result = client.get_author_feed(
+                actor=actor,
+                limit=100,
+                cursor=cursor,
+                filter=filter_type,
+                include_pins=False
+            )
+        except Exception as e:
+            print(f"fetch_new_posts_smart error on page {pages_used} for {actor}: {e}")
+            break
+
+        if not result.feed:
+            break
+
+        for item in result.feed:
+            post = item.post
+            uri = post.uri
+
+            if uri in existing_uris or uri in seen_this_run:
+                continue
+            if is_reply(post):
+                continue
+            if is_repost(post) and not include_reposts:
+                continue
+
+            images = extract_images_from_embed(getattr(post, 'embed', None))
+            video = extract_video_from_embed(getattr(post, 'embed', None))
+            if media_only and not images and not video:
+                continue
+
+            new_posts.append({
+                "uri": uri,
+                "author": post.author.handle,
+                "display_name": post.author.display_name or post.author.handle,
+                "text": getattr(post.record, 'text', '') or '',
+                "likes": getattr(post, 'like_count', 0) or 0,
+                "reposts": getattr(post, 'repost_count', 0) or 0,
+                "replies": getattr(post, 'reply_count', 0) or 0,
+                "created_at": getattr(post.record, 'created_at', ''),
+                "images": images,
+                "video": video,
+                "has_media": bool(images or video),
+            })
+            seen_this_run.add(uri)
+
+            if len(new_posts) >= target_new:
+                break
+
+        cursor = getattr(result, 'cursor', None)
+        if not cursor:
+            break  # reached end of this account's feed
+
+    return {
+        "success": True,
+        "new_posts": new_posts,
+        "pages_used": pages_used,
+        "exhausted": cursor is None,
+        "reached_target": len(new_posts) >= target_new
+    }
+
+
+
+
+
 
 
 def tool_add_to_vault(posts: list = None, handler_handle: str = None, session_id: str = None) -> dict:
