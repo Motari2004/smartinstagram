@@ -3513,7 +3513,7 @@ def fetch_new_posts_smart(
 
 def tool_add_to_vault(posts: list = None, handler_handle: str = None, session_id: str = None) -> dict:
     """
-    Save posts into the vault.
+    Save posts into the vault with better error handling and debugging.
     Prefer calling with session_id after a fetch — it uses the cached last fetch.
     You can also pass an explicit posts list.
     """
@@ -3526,45 +3526,135 @@ def tool_add_to_vault(posts: list = None, handler_handle: str = None, session_id
             "success": False,
             "error": "No posts to save. Fetch posts first, then say 'save them to the vault'."
         }
+    
+    print(f"📝 Attempting to save {len(posts)} posts to vault with handler_handle='{handler_handle}'")
+    
+    conn = None
     try:
         conn = get_db_connection()
         if not conn:
             return {"success": False, "error": "Database unavailable"}
+        
+        # Enable autocommit to ensure immediate saves
+        conn.autocommit = True
+        
         cur = conn.cursor()
         saved = 0
-        for post in posts:
-            images_json = Json(post.get('images', []))
-            video_json = Json(post.get('video')) if post.get('video') else None
-            cur.execute('''
-                INSERT INTO vault (uri, author, display_name, text, images, video, likes, reposts, replies, created_at, handler_handle)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (uri) DO UPDATE SET
-                    text = EXCLUDED.text,
-                    images = EXCLUDED.images,
-                    video = EXCLUDED.video,
-                    likes = EXCLUDED.likes,
-                    reposts = EXCLUDED.reposts,
-                    replies = EXCLUDED.replies
-            ''', (
-                post.get('uri'),
-                post.get('author'),
-                post.get('display_name'),
-                post.get('text'),
-                images_json,
-                video_json,
-                post.get('likes', 0),
-                post.get('reposts', 0),
-                post.get('replies', 0),
-                post.get('created_at'),
-                handler_handle or post.get('author')
-            ))
-            saved += 1
-        conn.commit()
+        failed = 0
+        errors = []
+        
+        for i, post in enumerate(posts):
+            try:
+                # Extract post data with defaults
+                uri = post.get('uri')
+                if not uri:
+                    print(f"⚠️ Post {i} has no URI, skipping")
+                    failed += 1
+                    continue
+                
+                author = post.get('author') or 'unknown'
+                display_name = post.get('display_name') or author
+                text = post.get('text') or ''
+                images_json = Json(post.get('images', []))
+                video_json = Json(post.get('video')) if post.get('video') else None
+                likes = post.get('likes', 0)
+                reposts = post.get('reposts', 0)
+                replies = post.get('replies', 0)
+                created_at = post.get('created_at') or datetime.now().isoformat()
+                final_handler = handler_handle or post.get('author') or 'default'
+                
+                # Log what we're saving
+                print(f"💾 Saving post {i+1}/{len(posts)}: uri={uri[:50]}... handler={final_handler}")
+                
+                # Try to insert or update
+                cur.execute('''
+                    INSERT INTO vault (uri, author, display_name, text, images, video, likes, reposts, replies, created_at, handler_handle)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (uri) DO UPDATE SET
+                        text = EXCLUDED.text,
+                        images = EXCLUDED.images,
+                        video = EXCLUDED.video,
+                        likes = EXCLUDED.likes,
+                        reposts = EXCLUDED.reposts,
+                        replies = EXCLUDED.replies,
+                        saved_at = CURRENT_TIMESTAMP,
+                        handler_handle = COALESCE(EXCLUDED.handler_handle, vault.handler_handle)
+                    RETURNING id
+                ''', (
+                    uri,
+                    author,
+                    display_name,
+                    text,
+                    images_json,
+                    video_json,
+                    likes,
+                    reposts,
+                    replies,
+                    created_at,
+                    final_handler
+                ))
+                
+                result = cur.fetchone()
+                if result:
+                    saved += 1
+                    print(f"✅ Saved post {i+1}: id={result[0]}")
+                else:
+                    print(f"⚠️ Post {i+1} saved but no ID returned")
+                    saved += 1
+                    
+            except psycopg2.IntegrityError as e:
+                print(f"❌ Integrity error for post {post.get('uri', 'unknown')}: {e}")
+                errors.append(f"Integrity error: {e}")
+                failed += 1
+                # Try to continue with next post
+                continue
+            except Exception as e:
+                print(f"❌ Error saving post {post.get('uri', 'unknown')}: {e}")
+                traceback.print_exc()
+                errors.append(str(e))
+                failed += 1
+                continue
+        
         cur.close()
-        conn.close()
-        return {"success": True, "saved": saved, "message": f"Saved {saved} post(s) to vault"}
+        
+        print(f"📊 Save complete: {saved} saved, {failed} failed")
+        
+        # Verify the save actually worked
+        if saved > 0:
+            verify_cur = conn.cursor()
+            verify_cur.execute("""
+                SELECT COUNT(*) FROM vault 
+                WHERE handler_handle = %s 
+                ORDER BY saved_at DESC 
+                LIMIT 1
+            """, (handler_handle or 'default',))
+            verify_count = verify_cur.fetchone()[0]
+            verify_cur.close()
+            print(f"🔍 Verification: {verify_count} posts in vault for handler '{handler_handle}'")
+        
+        return {
+            "success": saved > 0,
+            "saved": saved,
+            "failed": failed,
+            "errors": errors if errors else None,
+            "message": f"Saved {saved} post(s) to vault" + (f" ({failed} failed)" if failed > 0 else "")
+        }
+        
     except Exception as e:
+        print(f"❌ Fatal save error: {e}")
+        traceback.print_exc()
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
         return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 def tool_list_vault(limit: int = 30, handler_handle: str = None) -> dict:
@@ -8047,6 +8137,7 @@ def api_master_fetch_niche():
     limit_per_source = int(data.get('limit_per_source', 20))
     result = tool_master_fetch_niche(name=name, limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
+
 
 
 @app.route('/api/niche/master-fetch-all', methods=['POST'])
