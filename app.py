@@ -6068,11 +6068,11 @@ def execute_tool(name, arguments, session_id=None):
         if name == 'master_fetch_niche':
             return fn(
                 name=arguments.get('name'),
-                limit_per_source=int(arguments.get('limit_per_source', 10))
+                limit_per_source=int(arguments.get('limit_per_source', 20))
             )
 
         if name == 'master_fetch_all_niches':
-            return fn(limit_per_source=int(arguments.get('limit_per_source', 10)))
+            return fn(limit_per_source=int(arguments.get('limit_per_source', 20)))
         
         # For any other tool, just call it directly
         return fn(**arguments)
