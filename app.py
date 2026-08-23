@@ -1475,11 +1475,11 @@ def run_auto_once(name='default'):
 
 
 
-def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dict:
+def tool_master_fetch_niche(name: str = None, limit_per_source: int = 50) -> dict:
     """
-    'Master fetch' — pulls NEW posts from ALL sources in a niche pipeline.
-    Uses the same reliable fetch mechanism as manual fetch_posts.
-    Does NOT post anything. Pure reserve-building.
+    'Master fetch' — pulls ALL posts from ALL sources in a niche pipeline,
+    not just new ones. Builds a reserve of content to use when auto pilot
+    finds nothing new.
     """
     if not name:
         return {"success": False, "error": "Provide the niche/pipeline name"}
@@ -1503,22 +1503,18 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
     if not client or not session_id:
         return {"success": False, "error": "Could not get a Bluesky session for fetching"}
 
-    # Get existing URIs for dedup
-    existing_uris = _get_existing_vault_uris(resolved)
-    print(f"📚 Pipeline '{resolved}' already has {len(existing_uris)} posts saved — will skip these")
-
-    all_new = []
+    all_posts = []
     per_source = {}
     errors = {}
 
     for source in sources:
-        print(f"🔍 Fetching from {source}...")
+        print(f"🔍 Fetching ALL posts from {source} (limit: {limit_per_source})...")
         
-        # ===== USE THE RELIABLE tool_fetch_posts =====
+        # ===== FETCH ALL POSTS, NOT JUST NEW =====
         fetch_result = tool_fetch_posts(
             session_id=session_id,
             actor=source,
-            limit=limit_per_source * 2,  # Fetch extra to account for duplicates
+            limit=limit_per_source,  # Fetch as many as needed
             include_reposts=bool(cfg.get('include_reposts', False)),
             media_only=bool(cfg.get('media_only', True))
         )
@@ -1531,58 +1527,63 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
         posts = fetch_result.get('posts', [])
         print(f"📥 Fetched {len(posts)} posts from {source}")
         
-        # Filter out posts that are already in the vault
-        new_posts = []
-        for post in posts:
-            uri = post.get('uri')
-            if uri and uri not in existing_uris:
-                new_posts.append(post)
-                existing_uris.add(uri)  # Add to set to prevent duplicates within this run
+        # Check how many are already in the vault
+        existing_uris = _get_existing_vault_uris(resolved)
+        new_posts = [p for p in posts if p.get('uri') not in existing_uris]
+        existing_count = len(posts) - len(new_posts)
         
-        print(f"📊 Found {len(new_posts)} NEW posts from {source} (skipped {len(posts) - len(new_posts)} existing)")
+        print(f"📊 {len(new_posts)} NEW posts, {existing_count} already in vault")
         
         per_source[source] = {
             "fetched": len(posts),
             "new_found": len(new_posts),
-            "skipped": len(posts) - len(new_posts)
+            "already_in_vault": existing_count
         }
         
-        all_new.extend(new_posts)
-        
-        # If we've reached the target, stop fetching more sources
-        if len(all_new) >= limit_per_source:
-            print(f"🎯 Reached target of {limit_per_source} total posts, stopping")
-            break
+        all_posts.extend(new_posts)
 
-    if not all_new:
-        result_msg = (
-            f"Master fetch for '{resolved}': no NEW posts found across {len(sources)} source(s) "
-            f"— all recent posts are already in the vault"
-        )
+    if not all_posts:
+        # Check if we have any posts in the vault at all
+        vault_count = len(_get_existing_vault_uris(resolved))
+        if vault_count > 0:
+            result_msg = (
+                f"📦 No NEW posts found, but vault already has {vault_count} posts in reserve.\n"
+                f"Auto pilot will use these when nothing new is available."
+            )
+        else:
+            result_msg = (
+                f"⚠️ No posts found from any source. The vault is empty.\n"
+                f"Try increasing limit_per_source or check if the source has posts."
+            )
         return {
             "success": True,
             "fetched_count": 0,
             "saved_count": 0,
+            "vault_count": vault_count if vault_count > 0 else 0,
             "sources": sources,
             "per_source": per_source,
             "errors": errors if errors else None,
             "message": result_msg
         }
 
-    # ===== SAVE USING THE SAME MECHANISM =====
-    save_result = tool_add_to_vault(all_new, handler_handle=resolved)
+    # ===== SAVE ALL POSTS TO VAULT =====
+    save_result = tool_add_to_vault(all_posts, handler_handle=resolved)
     saved = save_result.get('saved', 0) if save_result.get('success') else 0
 
+    total_vault = len(_get_existing_vault_uris(resolved))
+    
     result_msg = (
-        f"✅ Master fetch for '{resolved}': found {len(all_new)} NEW post(s), "
-        f"saved {saved} to vault, from {len(sources)} source(s)"
+        f"✅ Master fetch for '{resolved}': fetched {len(all_posts)} NEW post(s), "
+        f"saved {saved} to vault.\n"
+        f"📦 Total reserve: {total_vault} posts available for auto pilot."
     )
     print(f"🗃️ {result_msg}")
 
     return {
         "success": True,
-        "fetched_count": len(all_new),
+        "fetched_count": len(all_posts),
         "saved_count": saved,
+        "vault_count": total_vault,
         "sources": sources,
         "per_source": per_source,
         "errors": errors if errors else None,
