@@ -3266,44 +3266,100 @@ def tool_restore_session(handle: str) -> dict:
 
 
 def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_reposts: bool = False, media_only: bool = True) -> dict:
-    """Fetch recent posts from a Bluesky handle."""
+    """
+    Fetch recent posts from a Bluesky handle.
+    Uses filter='posts_no_replies' to skip replies and get more content.
+    """
     if not session_id or session_id not in sessions:
         return {"success": False, "error": "Not logged in. Please login first."}
     try:
         client = sessions[session_id]['client']
-        result = client.get_author_feed(actor=actor, limit=min(limit * 2, 100))
+        
         posts = []
-        for item in result.feed:
-            post = item.post
-            if is_reply(post):
-                continue
-            if is_repost(post) and not include_reposts:
-                continue
-            images = extract_images_from_embed(getattr(post, 'embed', None))
-            video = extract_video_from_embed(getattr(post, 'embed', None))
-            if media_only and not images and not video:
-                continue
-            posts.append({
-                "uri": post.uri,
-                "author": post.author.handle,
-                "display_name": post.author.display_name or post.author.handle,
-                "text": getattr(post.record, 'text', '') or '',
-                "likes": getattr(post, 'like_count', 0) or 0,
-                "reposts": getattr(post, 'repost_count', 0) or 0,
-                "replies": getattr(post, 'reply_count', 0) or 0,
-                "created_at": getattr(post.record, 'created_at', ''),
-                "images": images,
-                "video": video,
-                "has_media": bool(images or video)
-            })
-            if len(posts) >= limit:
+        cursor = None
+        max_attempts = 3
+        
+        print(f"🔍 Fetching {limit} posts from @{actor}...")
+        
+        # Determine filter
+        if media_only:
+            # Use posts_with_media to get only posts with images/video
+            filter_type = 'posts_with_media'
+        else:
+            # Skip replies to get more content
+            filter_type = 'posts_no_replies'
+        
+        while len(posts) < limit and max_attempts > 0:
+            # Calculate how many more posts we need
+            remaining = limit - len(posts)
+            batch_limit = min(remaining, 100)  # API max is 100
+            
+            print(f"📄 Fetching page: limit={batch_limit}, filter={filter_type}, cursor={cursor[:20] if cursor else 'None'}")
+            
+            result = client.get_author_feed(
+                actor=actor,
+                limit=batch_limit,
+                cursor=cursor,
+                filter=filter_type,  # ← Use filter to get more relevant posts
+                include_pins=False
+            )
+            
+            if not result.feed:
+                print("📭 No more posts in feed")
                 break
+            
+            print(f"📥 Got {len(result.feed)} items from Bluesky")
+            
+            for item in result.feed:
+                post = item.post
+                
+                # Skip replies (already handled by filter, but double-check)
+                if is_reply(post):
+                    continue
+                # Skip reposts if not included
+                if is_repost(post) and not include_reposts:
+                    continue
+                    
+                images = extract_images_from_embed(getattr(post, 'embed', None))
+                video = extract_video_from_embed(getattr(post, 'embed', None))
+                
+                # If media_only=True, skip posts without media
+                if media_only and not images and not video:
+                    continue
+                    
+                posts.append({
+                    "uri": post.uri,
+                    "author": post.author.handle,
+                    "display_name": post.author.display_name or post.author.handle,
+                    "text": getattr(post.record, 'text', '') or '',
+                    "likes": getattr(post, 'like_count', 0) or 0,
+                    "reposts": getattr(post, 'repost_count', 0) or 0,
+                    "replies": getattr(post, 'reply_count', 0) or 0,
+                    "created_at": getattr(post.record, 'created_at', ''),
+                    "images": images,
+                    "video": video,
+                    "has_media": bool(images or video),
+                })
+                
+                if len(posts) >= limit:
+                    break
+            
+            # Get cursor for next page
+            cursor = getattr(result, 'cursor', None)
+            if not cursor:
+                print("📭 No cursor - reached end of feed")
+                break
+                
+            max_attempts -= 1
+            print(f"📊 Progress: {len(posts)}/{limit} posts collected")
 
-        # Cache for a later "save them to vault" without re-passing full posts
+        # Cache for later "save them to vault"
         if session_id in sessions:
             sessions[session_id]['_last_fetched'] = posts
             sessions[session_id]['_last_actor'] = actor
 
+        print(f"✅ Done: fetched {len(posts)} posts from @{actor}")
+        
         return {
             "success": True,
             "count": len(posts),
@@ -3311,6 +3367,8 @@ def tool_fetch_posts(session_id: str, actor: str, limit: int = 20, include_repos
             "message": f"Fetched {len(posts)} posts from @{actor}. Say 'save them to the vault' to store them."
         }
     except Exception as e:
+        print(f"❌ Error fetching posts: {e}")
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 
