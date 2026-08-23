@@ -7617,11 +7617,18 @@ def api_auto_status():
 
 @app.route('/api/auto/start', methods=['POST'])
 def api_auto_start():
+    data = request.json or {}
+    name = data.get('name')
+    if name:
+        return jsonify(tool_auto_start(name=name))
     return jsonify(tool_auto_start())
-
 
 @app.route('/api/auto/stop', methods=['POST'])
 def api_auto_stop():
+    data = request.json or {}
+    name = data.get('name')
+    if name:
+        return jsonify(tool_auto_stop(name=name))
     return jsonify(tool_auto_stop())
 
 

@@ -1207,15 +1207,24 @@ async function togglePipeline(name) {
     try {
         const pipelines = window._pipelines || [];
         const p = pipelines.find(p => p.name === name);
-        if (!p) return;
+        if (!p) {
+            toast(`❌ Pipeline "${name}" not found`, 'error');
+            return;
+        }
         
         const action = p.enabled ? 'stop' : 'start';
+        
+        // ===== FIX: Use named endpoints =====
+        // Option 1: If your backend supports query params
+        // const endpoint = `${API}/api/auto/${action}?name=${encodeURIComponent(name)}`;
+        
+        // Option 2: Send name in body (recommended)
         const endpoint = `${API}/api/auto/${action}`;
         
         const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name: name })  // ← Send name in body
         });
         const data = await res.json();
         
