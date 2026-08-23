@@ -8210,20 +8210,18 @@ def api_delete_all_accounts():
 
 @app.route('/api/niche/master-fetch', methods=['POST'])
 def api_master_fetch_niche():
-    """Master fetch button — top up one niche's vault reserve."""
+    """Master fetch button — top up one niche's vault reserve with pagination."""
     data = request.json or {}
     name = data.get('name')
-    limit_per_source = int(data.get('limit_per_source', 20))
+    limit_per_source = int(data.get('limit_per_source', 100))  # Increased default
     result = tool_master_fetch_niche(name=name, limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
 
-
-
 @app.route('/api/niche/master-fetch-all', methods=['POST'])
 def api_master_fetch_all():
-    """Top up ALL niche vaults in one click."""
+    """Top up ALL niche vaults in one click with pagination."""
     data = request.json or {}
-    limit_per_source = int(data.get('limit_per_source', 20))
+    limit_per_source = int(data.get('limit_per_source', 100))  # Increased default
     result = tool_master_fetch_all_niches(limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
 
