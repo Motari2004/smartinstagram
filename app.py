@@ -1553,7 +1553,7 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dic
     }
 
 
-def tool_master_fetch_all_niches(limit_per_source: int = 10) -> dict:
+def tool_master_fetch_all_niches(limit_per_source: int = 20) -> dict:
     """Run master fetch for every configured niche pipeline."""
     configs = _list_auto_configs()
     if not configs:
@@ -5503,7 +5503,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "limit_per_source": {"type": "integer", "default": 10}
+                    "limit_per_source": {"type": "integer", "default": 20}
                 }
             }
         }
@@ -7781,7 +7781,7 @@ def api_master_fetch_niche():
 def api_master_fetch_all():
     """Top up ALL niche vaults in one click."""
     data = request.json or {}
-    limit_per_source = int(data.get('limit_per_source', 10))
+    limit_per_source = int(data.get('limit_per_source', 20))
     result = tool_master_fetch_all_niches(limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
 
