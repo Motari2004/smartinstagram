@@ -3065,21 +3065,75 @@ def is_post_already_posted(uri, platform):
 # ============================================================
 
 def extract_images_from_embed(embed):
+    """
+    Extract images from Bluesky embed.
+    Supports both:
+    - app.bsky.embed.images (regular image posts)
+    - app.bsky.embed.external (link cards with images)
+    """
     images = []
     if not embed:
         return images
-    if hasattr(embed, 'images') and embed.images:
-        for img in embed.images:
-            data = {}
-            if hasattr(img, 'fullsize'):
-                data['url'] = img.fullsize
-            elif hasattr(img, 'thumb'):
-                data['url'] = img.thumb
-            else:
-                continue
-            data['thumb'] = getattr(img, 'thumb', data['url'])
-            data['alt'] = getattr(img, 'alt', '') or ''
-            images.append(data)
+    
+    # Check the embed type
+    embed_type = getattr(embed, '$type', '') or ''
+    
+    # ===== TYPE 1: app.bsky.embed.images (regular image posts) =====
+    if 'images' in embed_type or (hasattr(embed, 'images') and embed.images):
+        if hasattr(embed, 'images') and embed.images:
+            for img in embed.images:
+                data = {}
+                if hasattr(img, 'fullsize'):
+                    data['url'] = img.fullsize
+                elif hasattr(img, 'thumb'):
+                    data['url'] = img.thumb
+                else:
+                    continue
+                data['thumb'] = getattr(img, 'thumb', data['url'])
+                data['alt'] = getattr(img, 'alt', '') or ''
+                images.append(data)
+        return images
+    
+    # ===== TYPE 2: app.bsky.embed.external (link card with image) =====
+    if 'external' in embed_type or hasattr(embed, 'external'):
+        external = getattr(embed, 'external', None)
+        if external:
+            # Try different ways to get the image
+            thumb = getattr(external, 'thumb', None)
+            if thumb:
+                images.append({
+                    'url': thumb,
+                    'thumb': thumb,
+                    'alt': getattr(external, 'title', '') or getattr(external, 'description', '') or ''
+                })
+            elif hasattr(external, 'embed'):
+                # Recursive: might have an image inside the external
+                return extract_images_from_embed(external.embed)
+        return images
+    
+    # ===== TYPE 3: app.bsky.embed.record (quote post with images) =====
+    if 'record' in embed_type or hasattr(embed, 'record'):
+        record = getattr(embed, 'record', None)
+        if record:
+            # Check if the quoted post has images
+            embed_in_record = getattr(record, 'embed', None)
+            if embed_in_record:
+                return extract_images_from_embed(embed_in_record)
+        return images
+    
+    # ===== FALLBACK: Try to find any image in the embed =====
+    # Sometimes the image is in a different location
+    for attr_name in ['thumb', 'image', 'thumbnail', 'fullsize']:
+        if hasattr(embed, attr_name):
+            val = getattr(embed, attr_name)
+            if val:
+                images.append({
+                    'url': val,
+                    'thumb': val,
+                    'alt': ''
+                })
+                return images
+    
     return images
 
 
