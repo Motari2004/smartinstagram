@@ -1332,65 +1332,80 @@ def run_auto_once(name='default'):
             all_posts.extend(posts)
             print(f"📥 Fetched {len(posts)} posts from {source}")
         
-        
-        
-        
-        
-        
-        
-        
-        
+        # ============================================================
+        # CHECK 1: No posts fetched from any source
+        # ============================================================
         if not all_posts:
-            # ============================================================
-            # Nothing fetched at all from live sources → fall back to
-            # this niche's own vault reserve before giving up.
-            # ============================================================
+            print(f"⚠️ No posts fetched from any source for '{name}'")
+            
+            # Check vault for this niche
             fallback = tool_list_vault_by_status(
                 status='unposted',
                 limit=int(cfg.get('max_posts_per_run') or 2),
                 handler_handle=name
             )
             fallback_items = fallback.get('vault') or []
+            
+            print(f"📦 Vault for '{name}' has {len(fallback_items)} unposted posts")
+            
             if not fallback_items:
                 result_msg = f"No posts from any source, and the '{name}' vault has nothing unposted either"
                 _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
                 return {"success": True, "posted_count": 0, "message": result_msg}
+            
             new_posts = [{"id": it["id"], "uri": it["uri"]} for it in fallback_items]
             used_vault_fallback = True
+            print(f"✅ Using {len(new_posts)} posts from vault reserve for '{name}'")
+        
         else:
             # ============================================================
-            # Save EVERY fresh post fetched this cycle to vault — not
-            # just the ones about to be posted. This is what builds the
-            # niche's reserve for future fallback cycles.
+            # Save EVERY fresh post fetched to vault
             # ============================================================
             tool_add_to_vault(all_posts, handler_handle=name)
 
-            # Now pick which ones to actually post THIS cycle
+            # Pick which ones to post THIS cycle
             for p in all_posts:
                 uri = p.get('uri')
-                if not uri or _auto_seen(uri, name):
+                if not uri:
+                    continue
+                if _auto_seen(uri, name):
+                    print(f"⏭️ Skipping already seen: {uri[:50]}...")
                     continue
                 new_posts.append(p)
+                print(f"✅ New post found: {uri[:50]}...")
                 if len(new_posts) >= int(cfg.get('max_posts_per_run') or 2):
                     break
 
             used_vault_fallback = False
 
+            # ============================================================
+            # CHECK 2: All fetched posts were already seen
+            # ============================================================
             if not new_posts:
-                # All fetched posts were already seen → fall back to niche vault reserve
+                print(f"⚠️ All {len(all_posts)} fetched posts were already seen for '{name}'")
+                
+                # Fall back to niche vault reserve
                 fallback = tool_list_vault_by_status(
                     status='unposted',
                     limit=int(cfg.get('max_posts_per_run') or 2),
                     handler_handle=name
                 )
                 fallback_items = fallback.get('vault') or []
+                
+                print(f"📦 Vault for '{name}' has {len(fallback_items)} unposted posts")
+                
                 if not fallback_items:
                     result_msg = f"No new posts from any source, and the '{name}' vault has nothing unposted either"
                     _save_auto_config({**cfg, 'last_error': None, 'last_result': result_msg, 'last_run_at': datetime.now()})
                     return {"success": True, "posted_count": 0, "message": result_msg}
+                
                 new_posts = [{"id": it["id"], "uri": it["uri"]} for it in fallback_items]
                 used_vault_fallback = True
+                print(f"✅ Using {len(new_posts)} posts from vault reserve for '{name}'")
 
+        # ============================================================
+        # POST THE SELECTED POSTS
+        # ============================================================
         account_id = resolve_instagram_account_id(cfg.get('account_id'), cfg.get('account_username'))
         account_username = cfg.get('account_username')
         content_type = cfg.get('content_type') or 'feed'
@@ -1415,19 +1430,28 @@ def run_auto_once(name='default'):
             if r.get('success'):
                 posted += 1
             else:
-                errors.append(r.get('error'))
+                # ===== FIX: Ensure error is a string =====
+                error_msg = r.get('error')
+                if error_msg is None:
+                    error_msg = r.get('message') or 'Unknown error'
+                errors.append(str(error_msg))
             time.sleep(1.5)
 
         fallback_note = " [posted from niche vault reserve]" if used_vault_fallback else ""
+        
+        # ===== FIX: Properly join errors =====
+        error_text = None
+        if errors:
+            # Filter out None values and convert to strings
+            error_text = '; '.join([str(e) for e in errors if e is not None])
+            if not error_text:
+                error_text = 'Post failed'
+        
         result_msg = f"Auto: posted {posted}/{len(new_posts)} from {len(sources)} sources in '{name}'{fallback_note}"
-        
-        
-        
-        
         
         _save_auto_config({
             **cfg,
-            'last_error': '; '.join(errors) if errors else None,
+            'last_error': error_text,
             'last_result': result_msg,
             'last_run_at': datetime.now()
         })
@@ -1439,16 +1463,13 @@ def run_auto_once(name='default'):
             "total_fetched": len(all_posts),
             "sources": sources,
             "errors": errors_per_source,
+            "used_vault_fallback": used_vault_fallback,
             "message": result_msg
         }
     except Exception as e:
         traceback.print_exc()
         _save_auto_config({**cfg, 'last_error': str(e), 'last_run_at': datetime.now()})
         return {"success": False, "error": str(e)}
-
-
-    print("🤖 Auto pilot loop stopped")
-
 
 
 
