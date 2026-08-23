@@ -3752,8 +3752,8 @@ def tool_list_vault_by_status(status=None, limit=50, offset=0, handler_handle=No
         return {"success": False, "error": str(e)}
 
 
-def tool_delete_vault_items(ids=None, status=None, all=False):
-    """Delete vault items by ID, by status, or all."""
+def tool_delete_vault_items(ids=None, status=None, all=False, handler_handle=None):
+    """Delete vault items by ID, by status, or all. Optionally scoped to one niche/pipeline."""
     try:
         conn = get_db_connection()
         if not conn:
@@ -3763,35 +3763,42 @@ def tool_delete_vault_items(ids=None, status=None, all=False):
         deleted_count = 0
         deleted_uris = []
         
+        handler_filter = ""
+        handler_params = []
+        if handler_handle:
+            handler_filter = " AND v.handler_handle = %s"
+            handler_params = [handler_handle]
+        
         if ids and isinstance(ids, list):
             placeholders = ','.join(['%s'] * len(ids))
-            cur.execute(f"SELECT id, uri FROM vault WHERE id IN ({placeholders})", ids)
+            query = f"SELECT id, uri FROM vault v WHERE id IN ({placeholders}){handler_filter}"
+            cur.execute(query, ids + handler_params)
             items = cur.fetchall()
         elif status == 'unposted':
-            cur.execute("""
+            cur.execute(f"""
                 SELECT id, uri FROM vault v
                 WHERE NOT EXISTS (
                     SELECT 1 FROM posted_posts p 
                     WHERE p.uri = v.uri AND p.status IN ('completed', 'posted')
-                )
-            """)
+                ){handler_filter}
+            """, tuple(handler_params))
             items = cur.fetchall()
         elif status in ('posted', 'completed'):
-            cur.execute("""
+            cur.execute(f"""
                 SELECT v.id, v.uri FROM vault v
                 INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status IN ('completed', 'posted')
-            """)
+                WHERE p.status IN ('completed', 'posted'){handler_filter}
+            """, tuple(handler_params))
             items = cur.fetchall()
         elif status == 'scheduled':
-            cur.execute("""
+            cur.execute(f"""
                 SELECT v.id, v.uri FROM vault v
                 INNER JOIN posted_posts p ON p.uri = v.uri
-                WHERE p.status = 'scheduled'
-            """)
+                WHERE p.status = 'scheduled'{handler_filter}
+            """, tuple(handler_params))
             items = cur.fetchall()
         elif all:
-            cur.execute("SELECT id, uri FROM vault")
+            cur.execute(f"SELECT id, uri FROM vault v WHERE 1=1{handler_filter}", tuple(handler_params))
             items = cur.fetchall()
         else:
             return {"success": False, "error": "Specify ids, status, or all=True"}
@@ -3812,11 +3819,12 @@ def tool_delete_vault_items(ids=None, status=None, all=False):
         cur.close()
         conn.close()
         
+        scope = f" from '{handler_handle}'" if handler_handle else " globally"
         return {
             "success": True,
             "deleted_count": deleted_count,
             "deleted_uris": deleted_uris,
-            "message": f"Deleted {deleted_count} item(s) from vault"
+            "message": f"Deleted {deleted_count} item(s){scope}"
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5692,6 +5700,44 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    
+    
+    
+{
+    "type": "function",
+    "function": {
+        "name": "delete_vault_items",
+        "description": "PERMANENTLY delete vault items by status or all. ALWAYS pass handler_handle when the user names a specific niche/pipeline — omitting it deletes across ALL niches. Use with caution! This cannot be undone. ALWAYS confirm with the user before deleting.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["unposted", "posted", "scheduled", "all"],
+                    "description": "Delete items by status"
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "List of vault IDs to delete"
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "Delete ALL vault items (requires confirmation)"
+                },
+                "handler_handle": {
+                    "type": "string",
+                    "description": "Niche/pipeline name to scope the deletion to, e.g. 'Business'. REQUIRED whenever the user names a specific niche — never omit this in that case."
+                }
+            }
+        }
+    }
+},
+    
+    
+    
+    
+    
     {
         "type": "function",
         "function": {
@@ -5706,6 +5752,10 @@ TOOLS_SCHEMA = [
         }
     }
 ]
+
+
+
+
 
 
 
@@ -5895,6 +5945,41 @@ When showing vault items, include status icons:
 For posting, always mention which account was used.
 
 ===========================================
+⚠️ CRITICAL - NICHE-SCOPED VAULT DELETION (DO NOT SKIP):
+===========================================
+Vault items belong to a specific niche/pipeline via `handler_handle` (this is the
+pipeline `name`, e.g. "Business", "Fitness", "Humor").
+
+WHENEVER the user names a specific niche/pipeline while asking to delete vault
+items, you MUST pass handler_handle=<that niche name> to delete_vault_items.
+Omitting it does NOT scope the deletion to that niche — it deletes matching
+items across EVERY niche in the vault. This is a severe, irreversible mistake.
+
+Examples:
+- "remove the unposted posts in Business" 
+  → delete_vault_items(status="unposted", handler_handle="Business")
+  ✅ CORRECT — only Business is affected
+
+- "delete unposted" (no niche named)
+  → delete_vault_items(status="unposted")
+  ✅ CORRECT — this one IS meant to be global, since no niche was named
+
+- "delete posted items from Fitness"
+  → delete_vault_items(status="posted", handler_handle="Fitness")
+
+- "clear out the Humor vault"
+  → delete_vault_items(all=True, handler_handle="Humor", confirm=...)
+
+RULE OF THUMB: if a niche/pipeline name appears anywhere in the delete request,
+handler_handle is REQUIRED on that call. Never guess or skip it. If you are
+unsure which niche the user means, ask before deleting rather than deleting
+globally.
+
+Before confirming any destructive vault deletion, restate in your confirmation
+message exactly which niche (or "all niches" if none was named) will be
+affected, so the user can catch a scoping mistake before it happens.
+
+===========================================
 ACCOUNT DELETION (PERMANENT - USE WITH CAUTION):
 ===========================================
 - "delete account @username permanently" → delete_account(account_identifier="username")
@@ -5942,10 +6027,15 @@ User: "TheEasternFront"
 You: "✅ Done — posted to Instagram (@TheEasternFront). Caption: '...'"
 
 User: "delete all vault"
-You: "⚠️ This will permanently delete ALL vault items from your vault. This cannot be undone. Reply with YES_DELETE_ALL to confirm."
+You: "⚠️ This will permanently delete ALL vault items across ALL niches. This cannot be undone. Reply with YES_DELETE_ALL to confirm."
 
 User: "YES_DELETE_ALL"
 You: "🗑️ Permanently deleted 41 item(s) from vault"
+
+User: "remove the unposted posts in Business"
+You: "⚠️ This will permanently delete unposted items from the 'Business' niche only (other niches untouched). Confirm?"
+(after confirmation)
+You: "🗑️ Permanently deleted 12 unposted item(s) from 'Business'"
 
 User: "create a niche for humor with kackbro.bsky.social and miaganga.bsky.social to serpent_sniper1"
 You: "✅ Pipeline 'humor' saved · 2 sources · enabled=True → serpent_sniper1"
@@ -6014,10 +6104,10 @@ REMEMBER:
 - When adding sources, ALWAYS include ALL existing sources in the list
 - Check current sources first with "list sources in [pipeline]" before adding
 - Master Bluesky account handles ALL fetching automatically from .env
-- NEVER try to login with a source handle (like go4know.com) — use the master account"""
-
-
-
+- NEVER try to login with a source handle (like go4know.com) — use the master account
+- CRITICAL: when deleting vault items and the user names a specific niche, you MUST pass
+  handler_handle=<niche name> to delete_vault_items or the deletion will silently apply
+  to ALL niches instead of just the one requested. See the dedicated section above."""
 
 
 
@@ -6085,6 +6175,15 @@ def _quick_chat_context(session_id=None):
     return bits
 
 
+
+
+
+
+
+
+
+
+
 def execute_tool(name, arguments, session_id=None):
     """Execute a tool by name with arguments."""
     fn = TOOL_MAP.get(name)
@@ -6143,8 +6242,7 @@ def execute_tool(name, arguments, session_id=None):
         if name == 'list_vault':
             return fn(limit=int(arguments.get('limit') or 30))
         
-        # ===== NEW VAULT MANAGEMENT TOOLS =====
-        # ===== NEW VAULT MANAGEMENT TOOLS =====
+        # ===== VAULT MANAGEMENT TOOLS =====
         if name == 'list_vault_by_status':
             return fn(
                 status=arguments.get('status', 'all'),
@@ -6163,10 +6261,12 @@ def execute_tool(name, arguments, session_id=None):
                         "error": "Confirmation required",
                         "message": "⚠️ This will permanently delete ALL vault items. Reply with 'YES_DELETE_ALL' to confirm."
                     }
+            # ===== FIX: pass handler_handle through so niche-scoped deletes don't go global =====
             return fn(
                 ids=arguments.get('ids'),
                 status=arguments.get('status'),
-                all=arguments.get('all', False)
+                all=arguments.get('all', False),
+                handler_handle=arguments.get('handler_handle')
             )
         
         if name == 'post_unposted':
@@ -6175,7 +6275,7 @@ def execute_tool(name, arguments, session_id=None):
                 account_id=arguments.get('account_id'),
                 limit=int(arguments.get('limit', 10))
             )
-        # ===== END NEW VAULT MANAGEMENT TOOLS =====
+        # ===== END VAULT MANAGEMENT TOOLS =====
         
         if name == 'post_now':
             return fn(
