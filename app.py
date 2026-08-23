@@ -1475,11 +1475,12 @@ def run_auto_once(name='default'):
 
 
 
-def tool_master_fetch_niche(name: str = None, limit_per_source: int = 100) -> dict:
+def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dict:
     """
-    'Master fetch' — pulls ALL posts from ALL sources in a niche pipeline,
-    paginating through all pages until it reaches limit_per_source or runs out.
-    Builds a reserve of content to use when auto pilot finds nothing new.
+    'Master fetch' — pulls NEW posts from ALL sources in a niche pipeline,
+    paginating each source until it finds `limit_per_source` genuinely new
+    posts (not already in that niche's vault), or the feed runs out.
+    Does NOT post anything. Pure reserve-building.
     """
     if not name:
         return {"success": False, "error": "Provide the niche/pipeline name"}
@@ -1503,153 +1504,73 @@ def tool_master_fetch_niche(name: str = None, limit_per_source: int = 100) -> di
     if not client or not session_id:
         return {"success": False, "error": "Could not get a Bluesky session for fetching"}
 
-    all_new_posts = []
+    # Dedup against everything already saved for this pipeline
+    existing_uris = _get_existing_vault_uris(resolved)
+    print(f"📚 Pipeline '{resolved}' already has {len(existing_uris)} posts saved — will skip these")
+
+    all_new = []
     per_source = {}
     errors = {}
 
     for source in sources:
-        print(f"🔍 Fetching ALL posts from {source} (target: {limit_per_source} posts)...")
-        
-        # ===== PAGINATED FETCH =====
-        posts = []
-        cursor = None
-        pages_used = 0
-        max_pages = 20  # Safety limit to prevent infinite loops
-        
-        while len(posts) < limit_per_source and pages_used < max_pages:
-            pages_used += 1
-            
-            try:
-                # Calculate how many more posts we need
-                remaining = limit_per_source - len(posts)
-                batch_limit = min(remaining, 100)  # API max is 100
-                
-                print(f"  📄 Page {pages_used}: fetching {batch_limit} posts (cursor: {cursor[:20] if cursor else 'start'})")
-                
-                result = client.get_author_feed(
-                    actor=source,
-                    limit=batch_limit,
-                    cursor=cursor,
-                    filter='posts_with_media' if cfg.get('media_only', True) else 'posts_no_replies',
-                    include_pins=False
-                )
-                
-                if not result.feed:
-                    print(f"  📭 No more posts in feed (page {pages_used})")
-                    break
-                
-                print(f"  📥 Got {len(result.feed)} items from page {pages_used}")
-                
-                # Process each post
-                for item in result.feed:
-                    post = item.post
-                    
-                    # Skip replies
-                    if is_reply(post):
-                        continue
-                    # Skip reposts if not included
-                    if is_repost(post) and not cfg.get('include_reposts', False):
-                        continue
-                    
-                    images = extract_images_from_embed(getattr(post, 'embed', None))
-                    video = extract_video_from_embed(getattr(post, 'embed', None))
-                    
-                    # Skip if media_only and no media
-                    if cfg.get('media_only', True) and not images and not video:
-                        continue
-                    
-                    posts.append({
-                        "uri": post.uri,
-                        "author": post.author.handle,
-                        "display_name": post.author.display_name or post.author.handle,
-                        "text": getattr(post.record, 'text', '') or '',
-                        "likes": getattr(post, 'like_count', 0) or 0,
-                        "reposts": getattr(post, 'repost_count', 0) or 0,
-                        "replies": getattr(post, 'reply_count', 0) or 0,
-                        "created_at": getattr(post.record, 'created_at', ''),
-                        "images": images,
-                        "video": video,
-                        "has_media": bool(images or video),
-                    })
-                    
-                    if len(posts) >= limit_per_source:
-                        break
-                
-                # Get cursor for next page
-                cursor = getattr(result, 'cursor', None)
-                if not cursor:
-                    print(f"  📭 No cursor - reached end of feed (page {pages_used})")
-                    break
-                    
-            except Exception as e:
-                print(f"  ❌ Error on page {pages_used}: {e}")
-                errors[source] = str(e)
-                break
-        
-        print(f"📊 Fetched {len(posts)} total posts from {source} across {pages_used} pages")
-        
-        # Check which posts are already in the vault
-        existing_uris = _get_existing_vault_uris(resolved)
-        new_posts = [p for p in posts if p.get('uri') not in existing_uris]
-        existing_count = len(posts) - len(new_posts)
-        
-        print(f"📊 {len(new_posts)} NEW posts, {existing_count} already in vault")
-        
-        per_source[source] = {
-            "fetched": len(posts),
-            "new_found": len(new_posts),
-            "already_in_vault": existing_count,
-            "pages_scanned": pages_used,
-            "exhausted": cursor is None
-        }
-        
-        all_new_posts.extend(new_posts)
-        
-        # If we've reached the overall target, stop fetching more sources
-        if len(all_new_posts) >= limit_per_source * len(sources):
-            print(f"🎯 Reached target, stopping")
+        result = fetch_new_posts_smart(
+            session_id=session_id,
+            actor=source,
+            target_new=limit_per_source,
+            existing_uris=existing_uris,
+            media_only=bool(cfg.get('media_only', True)),
+            include_reposts=bool(cfg.get('include_reposts')),
+            max_pages=15
+        )
+        if not result.get('success'):
+            errors[source] = result.get('error')
+            continue
 
-    if not all_new_posts:
-        vault_count = len(_get_existing_vault_uris(resolved))
-        if vault_count > 0:
-            result_msg = (
-                f"📦 No NEW posts found, but vault already has {vault_count} posts in reserve.\n"
-                f"Auto pilot will use these when nothing new is available."
-            )
-        else:
-            result_msg = (
-                f"⚠️ No posts found from any source. The vault is empty.\n"
-                f"Try increasing limit_per_source or check if the source has posts."
-            )
+        new_posts = result.get('new_posts') or []
+        all_new.extend(new_posts)
+        per_source[source] = {
+            "new_found": len(new_posts),
+            "pages_scanned": result.get('pages_used'),
+            "exhausted_feed": result.get('exhausted'),
+            "reached_target": result.get('reached_target')
+        }
+        # Add this source's new URIs to the dedup set so a later source
+        # in the same run can't grab the same post twice (rare cross-posts)
+        existing_uris.update(p['uri'] for p in new_posts)
+
+        print(
+            f"📥 {source}: found {len(new_posts)} NEW post(s) "
+            f"({result.get('pages_used')} page(s) scanned, "
+            f"{'reached target' if result.get('reached_target') else 'feed exhausted' if result.get('exhausted') else 'stopped early'})"
+        )
+
+    if not all_new:
+        result_msg = (
+            f"Master fetch for '{resolved}': no NEW posts found across {len(sources)} source(s) "
+            f"— all recent posts are already in the vault"
+        )
         return {
             "success": True,
             "fetched_count": 0,
-            "saved_count": 0,
-            "vault_count": vault_count if vault_count > 0 else 0,
             "sources": sources,
             "per_source": per_source,
-            "errors": errors if errors else None,
+            "errors": errors,
             "message": result_msg
         }
 
-    # ===== SAVE ALL POSTS TO VAULT =====
-    save_result = tool_add_to_vault(all_new_posts, handler_handle=resolved)
+    save_result = tool_add_to_vault(all_new, handler_handle=resolved)
     saved = save_result.get('saved', 0) if save_result.get('success') else 0
 
-    total_vault = len(_get_existing_vault_uris(resolved))
-    
     result_msg = (
-        f"✅ Master fetch for '{resolved}': fetched {len(all_new_posts)} NEW post(s) "
-        f"across {len(sources)} source(s), saved {saved} to vault.\n"
-        f"📦 Total reserve: {total_vault} posts available for auto pilot."
+        f"✅ Master fetch for '{resolved}': found {len(all_new)} NEW post(s), "
+        f"saved {saved} to vault, from {len(sources)} source(s)"
     )
     print(f"🗃️ {result_msg}")
 
     return {
         "success": True,
-        "fetched_count": len(all_new_posts),
+        "fetched_count": len(all_new),
         "saved_count": saved,
-        "vault_count": total_vault,
         "sources": sources,
         "per_source": per_source,
         "errors": errors if errors else None,
@@ -8210,18 +8131,20 @@ def api_delete_all_accounts():
 
 @app.route('/api/niche/master-fetch', methods=['POST'])
 def api_master_fetch_niche():
-    """Master fetch button — top up one niche's vault reserve with pagination."""
+    """Master fetch button — top up one niche's vault reserve."""
     data = request.json or {}
     name = data.get('name')
-    limit_per_source = int(data.get('limit_per_source', 100))  # Increased default
+    limit_per_source = int(data.get('limit_per_source', 20))
     result = tool_master_fetch_niche(name=name, limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
 
+
+
 @app.route('/api/niche/master-fetch-all', methods=['POST'])
 def api_master_fetch_all():
-    """Top up ALL niche vaults in one click with pagination."""
+    """Top up ALL niche vaults in one click."""
     data = request.json or {}
-    limit_per_source = int(data.get('limit_per_source', 100))  # Increased default
+    limit_per_source = int(data.get('limit_per_source', 20))
     result = tool_master_fetch_all_niches(limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
 
