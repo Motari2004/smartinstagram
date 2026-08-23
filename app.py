@@ -1475,7 +1475,7 @@ def run_auto_once(name='default'):
 
 
 
-def tool_master_fetch_niche(name: str = None, limit_per_source: int = 10) -> dict:
+def tool_master_fetch_niche(name: str = None, limit_per_source: int = 20) -> dict:
     """
     'Master fetch' — pulls fresh posts from ALL sources in a niche pipeline
     and saves them to that niche's vault (handler_handle = pipeline name).
