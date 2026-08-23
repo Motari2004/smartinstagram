@@ -5489,7 +5489,7 @@ TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Niche/pipeline name"},
-                    "limit_per_source": {"type": "integer", "default": 10}
+                    "limit_per_source": {"type": "integer", "default": 20}
                 },
                 "required": ["name"]
             }
