@@ -7772,7 +7772,7 @@ def api_master_fetch_niche():
     """Master fetch button — top up one niche's vault reserve."""
     data = request.json or {}
     name = data.get('name')
-    limit_per_source = int(data.get('limit_per_source', 10))
+    limit_per_source = int(data.get('limit_per_source', 20))
     result = tool_master_fetch_niche(name=name, limit_per_source=limit_per_source)
     return jsonify(result), (200 if result.get('success') else 400)
 
