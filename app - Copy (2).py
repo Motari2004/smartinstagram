@@ -29,171 +29,6 @@ from psycopg2.extras import Json, RealDictCursor
 load_dotenv()
 
 
-
-
-
-
-
-
-# ============================================================
-# ASYNC CRON FOR CRON-JOB.ORG - Immediate Response
-# ============================================================
-
-import threading
-import time
-from datetime import datetime
-
-# Global state for tracking cron runs
-_cron_jobs = {}
-_cron_job_counter = 0
-_cron_lock = threading.Lock()
-
-def _process_pipelines_async(job_id, pipelines):
-    """Background worker that processes pipelines"""
-    try:
-        print(f"🔄 Background job {job_id} started at {datetime.now()}")
-        
-        results = []
-        total_posted = 0
-        
-        for i, cfg in enumerate(pipelines, 1):
-            pipeline_name = cfg.get('name')
-            print(f"   [{i}/{len(pipelines)}] Running: {pipeline_name}")
-            
-            try:
-                start_time = time.time()
-                r = run_auto_once(pipeline_name)
-                elapsed = time.time() - start_time
-                
-                result = {
-                    "name": pipeline_name,
-                    "posted": r.get('posted_count', 0),
-                    "success": r.get('success', False),
-                    "message": r.get('message', ''),
-                    "elapsed_seconds": round(elapsed, 2)
-                }
-                results.append(result)
-                total_posted += r.get('posted_count', 0)
-                print(f"      ✅ Posted {r.get('posted_count', 0)} in {elapsed:.2f}s")
-                
-            except Exception as e:
-                results.append({
-                    "name": pipeline_name,
-                    "posted": 0,
-                    "success": False,
-                    "message": f"Error: {str(e)}",
-                    "elapsed_seconds": 0
-                })
-                print(f"      ❌ Error: {str(e)}")
-            
-            # Small delay between pipelines
-            if i < len(pipelines):
-                time.sleep(2)
-        
-        # Update job status
-        with _cron_lock:
-            _cron_jobs[job_id]['status'] = 'completed'
-            _cron_jobs[job_id]['completed_at'] = datetime.now().isoformat()
-            _cron_jobs[job_id]['results'] = results
-            _cron_jobs[job_id]['total_posted'] = total_posted
-        
-        print(f"✅ Background job {job_id} completed at {datetime.now()}")
-        print(f"   Total posted: {total_posted}")
-        
-    except Exception as e:
-        with _cron_lock:
-            _cron_jobs[job_id]['status'] = 'failed'
-            _cron_jobs[job_id]['error'] = str(e)
-            _cron_jobs[job_id]['completed_at'] = datetime.now().isoformat()
-        print(f"❌ Background job {job_id} failed: {e}")
-
-def tool_auto_run_async():
-    """Start async cron run - returns immediately, processes in background."""
-    global _cron_job_counter
-    
-    # Get enabled pipelines
-    pipelines = [c for c in _list_auto_configs() if c.get('enabled')]
-    
-    if not pipelines:
-        return {
-            "success": True,
-            "job_id": None,
-            "message": "No enabled pipelines to run",
-            "pipelines_count": 0
-        }
-    
-    # Generate job ID
-    _cron_job_counter += 1
-    job_id = f"cron_{_cron_job_counter}_{int(time.time())}"
-    
-    # Create job entry
-    with _cron_lock:
-        _cron_jobs[job_id] = {
-            'status': 'running',
-            'started_at': datetime.now().isoformat(),
-            'completed_at': None,
-            'total_pipelines': len(pipelines),
-            'completed_pipelines': 0,
-            'total_posted': 0,
-            'results': [],
-            'error': None
-        }
-    
-    # Start background thread
-    thread = threading.Thread(
-        target=_process_pipelines_async,
-        args=(job_id, pipelines),
-        daemon=True
-    )
-    thread.start()
-    
-    return {
-        "success": True,
-        "job_id": job_id,
-        "message": f"Started background job {job_id} with {len(pipelines)} pipelines",
-        "pipelines_count": len(pipelines),
-        "status": _cron_jobs[job_id]
-    }
-
-def get_cron_job_status(job_id=None):
-    """Get status of cron job(s)"""
-    with _cron_lock:
-        if job_id:
-            if job_id in _cron_jobs:
-                return {
-                    "success": True,
-                    "job_id": job_id,
-                    "status": _cron_jobs[job_id]
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Job {job_id} not found"
-                }
-        else:
-            if _cron_jobs:
-                latest_id = max(_cron_jobs.keys())
-                return {
-                    "success": True,
-                    "job_id": latest_id,
-                    "status": _cron_jobs[latest_id],
-                    "all_jobs": list(_cron_jobs.keys())
-                }
-            else:
-                return {
-                    "success": True,
-                    "message": "No cron jobs have been run",
-                    "all_jobs": []
-                }
-
-
-
-
-
-
-
-
-
 # ============================================================
 # MASTER BLUESKY ACCOUNT (for auto fetching)
 # ============================================================
@@ -8400,40 +8235,21 @@ def api_master_status():
 @app.route('/api/cron/auto-run', methods=['GET'])
 def cron_auto_run():
     """
-    cron-job.org endpoint - returns immediately to prevent timeout.
-    Processing happens in background.
+    Vercel cron endpoint - runs auto pilot on a schedule.
+    Called automatically by Vercel's cron job system.
     """
     try:
-        # Check if there's already a job running
-        running_jobs = []
-        with _cron_lock:
-            for job_id, job in _cron_jobs.items():
-                if job['status'] == 'running':
-                    running_jobs.append(job_id)
+        # Run ALL enabled pipelines once
+        result = tool_auto_run_now()
         
-        if running_jobs:
-            return jsonify({
-                "success": True,
-                "already_running": True,
-                "message": f"Job already running: {running_jobs[-1]}",
-                "job_id": running_jobs[-1],
-                "timestamp": datetime.now().isoformat()
-            })
-        
-        # Start async job and return immediately
-        result = tool_auto_run_async()
-        
-        print(f"🔄 Cron auto-run started: {result.get('job_id')} at {datetime.now()}")
+        # Log what happened
+        print(f"🔄 Cron auto-run: {result.get('message', 'done')}")
         
         return jsonify({
             "success": True,
-            "job_id": result.get('job_id'),
-            "message": result.get('message'),
-            "pipelines_count": result.get('pipelines_count', 0),
-            "timestamp": datetime.now().isoformat(),
-            "status": result.get('status')
+            "result": result,
+            "timestamp": datetime.now().isoformat()
         })
-        
     except Exception as e:
         print(f"❌ Cron auto-run error: {e}")
         traceback.print_exc()
@@ -8441,16 +8257,8 @@ def cron_auto_run():
             "success": False,
             "error": str(e),
             "timestamp": datetime.now().isoformat()
-        }), 200  # Always return 200 to prevent cron-job.org retries
+        }), 500
 
-
-
-
-@app.route('/api/cron/status', methods=['GET'])
-def api_cron_status():
-    """Get current cron job status"""
-    job_id = request.args.get('job_id')
-    return jsonify(get_cron_job_status(job_id))
 
 
 
